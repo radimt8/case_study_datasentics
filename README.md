@@ -81,6 +81,87 @@ corr_diag = compute_correlation_diagnostics(mu_U, mu_V)
 - **Issue:** Only uses rating data, ignoring rich metadata (genres, user demographics)
 - **Missed Opportunity:** Content-based features could address sparsity and cold-start
 
+## Major Limitation: Cold-Start User Coverage Gap
+
+### The Fundamental Problem
+**Current System Coverage:** Only 4% of total user base (~3K out of 278K users)
+
+Our filtering approach creates a critical production limitation:
+- **Training Filter:** Users with <20 ratings excluded from model training
+- **Consequence:** No learned user factors (U_i) exist for 96% of users
+- **Business Impact:** Cannot serve recommendations to vast majority of potential customers
+
+### Mathematical Root Cause
+```python
+# Bayesian Matrix Factorization requires learned user factors
+prediction = sigmoid(U_user @ V_item.T)
+# Problem: U_user doesn't exist for non-training users!
+```
+
+**User 546 Example:**
+- Had 15 ratings in original dataset
+- Filtered out during preprocessing (< 20 rating threshold)
+- Result: No user factors learned → Cannot generate recommendations
+
+### Technical Solutions (Not Implemented)
+
+#### 1. **Weighted Factor Imputation** (Quick Fix)
+For cold-start users with some ratings, compute user profile as weighted average of rated item factors:
+```python
+# User rated books [i,j,k] with ratings [r_i, r_j, r_k]
+user_profile = (V_i * r_i + V_j * r_j + V_k * r_k) / (r_i + r_j + r_k)
+predictions = sigmoid(user_profile @ V_all.T)
+```
+
+**Advantages:** Mathematically sound, uses existing learned item factors  
+**Limitations:** Requires at least 1 rating, higher uncertainty
+
+#### 2. **Hybrid Content-Based System** (Robust Solution)
+```python
+# Multi-modal prediction combining:
+final_prediction = α * collaborative_filtering(U,V) +  
+                   β * content_similarity(user_profile, book_features) +
+                   γ * popularity_baseline(book_id)
+```
+
+**Features to leverage:**
+- **Book metadata:** Genre, author, publication year, series information
+- **User demographics:** Age, location (available in Users.csv)
+- **Implicit feedback:** Books viewed but not rated, time spent reading
+
+#### 3. **Progressive User Onboarding** (UX Solution)
+- **New users:** Start with popularity-based recommendations by genre
+- **After 3-5 ratings:** Switch to weighted factor imputation
+- **After 10+ ratings:** Full collaborative filtering with uncertainty quantification
+
+### Production Implementation Roadmap
+
+**Phase 1 (1-2 weeks): Expand Coverage**
+- Implement weighted factor imputation for users with 1-19 ratings
+- Add popularity-based fallback for ice-cold users
+- Expand coverage from 4% to ~40% of user base
+
+**Phase 2 (3-4 weeks): Hybrid Architecture**
+- Extract and vectorize book content features (TF-IDF on titles/descriptions)
+- Implement content-based similarity scoring
+- Ensemble model with learned CF + content + popularity weights
+
+**Phase 3 (2-3 months): Advanced Cold-Start**
+- Active learning: Smart questions for new users ("Rate these popular books")
+- Transfer learning: Pre-trained book embeddings from external data
+- Real-time adaptation: Update user profile after each new rating
+
+### Business Justification
+- **Current system:** Serves 4% of potential users (power users only)
+- **Enhanced system:** Serves 100% of users with degraded but acceptable quality
+- **Revenue impact:** Enable customer acquisition, not just retention
+- **Competitive advantage:** Most recommendation systems struggle with cold-start
+
+### Why This Wasn't Implemented
+**Case Study Scope:** This project demonstrates advanced mathematical modeling and production architecture awareness, not comprehensive feature engineering.
+
+**Real-world priority:** For consulting presentation, showing awareness of limitations and clear solution paths is more valuable than implementing every production feature.
+
 ## Production Readiness Assessment
 
 ### ✅ Ready for Production

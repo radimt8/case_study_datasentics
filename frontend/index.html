@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bayesian Book Recommendations</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 Bayesian Book Recommendations</h1>
+            <p class="subtitle">Uncertainty-aware recommendations with confidence intervals</p>
+        </header>
+
+        <div class="controls">
+            <div class="input-group">
+                <label for="userId">User ID:</label>
+                <input type="number" id="userId" placeholder="Enter user ID (e.g., 8)" min="1">
+                <button id="randomUser">Random User</button>
+            </div>
+            
+            <div class="input-group">
+                <label for="topK">Number of recommendations:</label>
+                <input type="range" id="topK" min="1" max="20" value="10">
+                <span id="topKValue">10</span>
+            </div>
+            
+            <button id="getRecommendations" class="primary-btn">Get Recommendations</button>
+        </div>
+
+        <div id="systemInfo" class="system-info"></div>
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Loading recommendations...</p>
+        </div>
+        <div id="notice" class="notice hidden"></div>
+        <div id="results" class="results hidden"></div>
+    </div>
+
+    <footer>
+        <div class="model-info">
+            <h3>Model Information</h3>
+            <div id="modelInfo" class="model-stats"></div>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>

@@ -11,3 +11,51 @@ services:
       - KAGGLE_CONFIG_DIR=/home/jovyan/.kaggle
       - JUPYTER_ENABLE_LAB=yes
     command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    depends_on:
+      - dragonfly
+    environment:
+      - REDIS_URL=redis://dragonfly:6379
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
+  batch:
+    build:
+      context: .
+      dockerfile: Dockerfile.batch
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    depends_on:
+      - dragonfly
+    environment:
+      - REDIS_URL=redis://dragonfly:6379
+    profiles:
+      - batch  # Only run when explicitly requested
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly
+    ports:
+      - "6379:6379"
+    command: dragonfly --logtostderr
+    volumes:
+      - dragonfly_data:/data
+
+volumes:
+  dragonfly_data:
