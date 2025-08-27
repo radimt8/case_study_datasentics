@@ -6,6 +6,8 @@ services:
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./data:/home/jovyan/data
+      - ~/.kaggle:/home/jovyan/.kaggle  # Mount kaggle credentials
     environment:
+      - KAGGLE_CONFIG_DIR=/home/jovyan/.kaggle
       - JUPYTER_ENABLE_LAB=yes
     command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''

@@ -9,6 +9,7 @@ __pycache__/
 # Data
 *.csv
 /data
+/notebooks
 
 # Distribution / packaging
 .Python
