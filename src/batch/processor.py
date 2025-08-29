@@ -22,17 +22,27 @@ class BatchProcessor:
         self.model = None
         self.recommender = None
         
-    def run_full_pipeline(self, min_book_ratings: int = 50, 
+    def run_full_pipeline(self, min_book_ratings: int = 50,
                          min_user_ratings: int = 20,
                          k: int = 10,
                          n_samples: int = 1500,
-                         burn_in: int = 500,
+                         burn_in: int = 100,
                          alpha: float = 2.0,
-                         top_k_recs: int = 10) -> Dict:
-        """Run the complete MCMC training and precomputation pipeline"""
+                         top_k_recs: int = 10,
+                         use_adaptive: bool = True) -> Dict:
+        """Run the complete MCMC training pipeline"""
+        
+        # Validation
+        if n_samples < 100:
+            print(f"⚠️  Warning: n_samples={n_samples} is very low. Recommendations may be poor.")
+            print("   Recommended minimum: 200 for dev, 500 for staging, 1500 for production")
+        
+        if burn_in < 10:
+            burn_in = 10
+            print(f"⚠️  Burn-in too low, setting to minimum of {burn_in}")
         
         print("=" * 60)
-        print(f"MCMC BATCH PROCESSING STARTED: {datetime.now()}")
+        print(f"ADAPTIVE MCMC BATCH PROCESSING STARTED: {datetime.now()}")
         print("=" * 60)
         
         # Step 1: Data preprocessing
@@ -55,21 +65,40 @@ class BatchProcessor:
             alpha=alpha
         )
         
-        # Step 4: Create MCMC recommender
+        # Step 4: Create recommender
         print("\n4. CREATING MCMC RECOMMENDATION SERVICE...")
         self.recommender = MCMCRecommender(
             model=self.model,
             book_titles=matrices['book_titles']
         )
         
-        # Step 5: Train with MCMC sampling
-        print(f"\n5. TRAINING WITH MCMC ({n_samples} samples, {burn_in} burn-in)...")
+        # Step 5: Train with adaptive MCMC
+        print(f"\n5. TRAINING WITH ADAPTIVE MCMC...")
+        print(f"   - MAP initialization: ENABLED")
+        print(f"   - Adaptive stopping: {'ENABLED' if use_adaptive else 'DISABLED'}")
+        print(f"   - Max samples: {n_samples}, Burn-in: {burn_in}")
+        
+        # Calculate minimum samples for convergence checking
+        # Need at least 100 samples for reliable convergence metrics
+        min_samples_for_convergence = min(100, n_samples // 2)
+        
         training_results = self.recommender.train(
             matrices['R_normalized'],
             matrices['mask_tensor'],
+            R_test_normalized=matrices.get('R_test_normalized'),
+            mask_test=matrices.get('mask_test_tensor'),
             n_samples=n_samples,
-            burn_in=burn_in
+            burn_in=burn_in,
+            use_map_init=True,
+            adaptive=use_adaptive,
+            min_samples=min_samples_for_convergence,  # Dynamic minimum
+            check_every=max(10, n_samples // 20)      # Dynamic check frequency
         )
+        
+        print(f"\nTraining completed in {training_results['training_time']:.1f}s")
+        print(f"Collected {training_results['n_samples']} samples")
+        if training_results.get('converged'):
+            print("✓ Model converged!")
         
         # Step 6: Evaluate model
         print("\n6. EVALUATING MODEL PERFORMANCE...")
@@ -99,6 +128,7 @@ class BatchProcessor:
         self._store_model_metadata(training_results, evaluation_metrics, matrices, 
                                  k, n_samples, burn_in)
         
+        # Return comprehensive results
         pipeline_results = {
             'timestamp': datetime.now().isoformat(),
             'training_results': training_results,
@@ -113,17 +143,19 @@ class BatchProcessor:
             'model_parameters': {
                 'k': k,
                 'n_samples': n_samples,
+                'actual_samples_collected': training_results['n_samples'],
                 'burn_in': burn_in,
                 'alpha': alpha,
                 'min_book_ratings': min_book_ratings,
                 'min_user_ratings': min_user_ratings
+            },
+            'performance': {
+                'converged': training_results.get('converged', False),
+                'training_time_seconds': training_results['training_time'],
+                'test_rmse': evaluation_metrics['rmse_original_scale'],
+                'test_mae': evaluation_metrics['mae_original_scale']
             }
         }
-        
-        print("\n" + "=" * 60)
-        print(f"MCMC BATCH PROCESSING COMPLETED: {datetime.now()}")
-        print(f"Recommendations stored for {stored_count} users")
-        print("=" * 60)
         
         return pipeline_results
     
@@ -153,8 +185,8 @@ class BatchProcessor:
         return stored_count
     
     def _store_model_metadata(self, training_results: Dict, 
-                            evaluation_metrics: Dict, matrices: Dict,
-                            k: int, n_samples: int, burn_in: int):
+                             evaluation_metrics: Dict, matrices: Dict,
+                             k: int, n_samples: int, burn_in: int):
         """Store model metadata and statistics"""
         
         metadata = {
@@ -163,9 +195,11 @@ class BatchProcessor:
             'model_performance': evaluation_metrics,
             'training_info': {
                 'training_time': training_results['training_time'],
-                'n_samples': training_results['n_samples'],
-                'burn_in': training_results['burn_in'],
-                'total_iterations': training_results['total_iterations']
+                'n_samples_collected': training_results['n_samples'],  # Actual samples collected
+                'n_iterations': training_results['n_iterations'],      # Total iterations run
+                'burn_in': training_results.get('burn_in', burn_in),
+                'converged': training_results.get('converged', False),
+                'used_map_init': training_results.get('used_map_init', False)
             },
             'dataset_info': {
                 'n_users': matrices['n_users'],
@@ -175,7 +209,8 @@ class BatchProcessor:
             },
             'model_params': {
                 'k': k,
-                'n_samples': n_samples,
+                'requested_samples': n_samples,  # What was requested
+                'actual_samples': training_results['n_samples'],  # What we got
                 'burn_in': burn_in,
                 'alpha': 2.0
             }
@@ -218,27 +253,69 @@ class BatchProcessor:
                 'timestamp': datetime.now().isoformat()
             }
 
-
 def main():
     """Main entry point for batch processing"""
+    import os
+    
     processor = BatchProcessor()
     
+    # Environment-based configuration
+    env = os.getenv('ENVIRONMENT', 'development')
+    
+    if env == 'production':
+        # Production settings - high quality
+        config = {
+            'min_book_ratings': 50,
+            'min_user_ratings': 20,
+            'k': 10,
+            'n_samples': 1500,  # More samples for production
+            'burn_in': 200,     # Longer burn-in
+            'alpha': 2.0,
+            'top_k_recs': 20,   # More recommendations stored
+            'use_adaptive': True
+        }
+    elif env == 'staging':
+        # Staging - medium quality, faster
+        config = {
+            'min_book_ratings': 50,
+            'min_user_ratings': 20,
+            'k': 10,
+            'n_samples': 500,
+            'burn_in': 100,
+            'alpha': 2.0,
+            'top_k_recs': 15,
+            'use_adaptive': True
+        }
+    else:
+        # Development - fast iteration
+        config = {
+            'min_book_ratings': 50,
+            'min_user_ratings': 20,
+            'k': 10,
+            'n_samples': 200,   # Minimum for decent quality
+            'burn_in': 50,      # Reduced with MAP init
+            'alpha': 2.0,
+            'top_k_recs': 10,
+            'use_adaptive': True
+        }
+    
+    print(f"Running in {env} mode with config:")
+    for key, value in config.items():
+        print(f"  {key}: {value}")
+    
     try:
-        results = processor.run_full_pipeline(
-            min_book_ratings=50,
-            min_user_ratings=20,
-            k=10,
-            n_samples=1500,
-            burn_in=500,
-            alpha=2.0,
-            top_k_recs=10
-        )
+        results = processor.run_full_pipeline(**config)
         
         print("\nMCMC Pipeline completed successfully!")
+        print(f"✓ Collected {results['training_results']['n_samples']} samples")
+        print(f"✓ Test RMSE: {results['evaluation_metrics']['rmse_original_scale']:.3f}")
+        
         return results
         
     except Exception as e:
         print(f"MCMC Pipeline failed with error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         raise
 
 

@@ -1,283 +1,429 @@
 import torch
 import torch.distributions as dist
+import torch.optim as optim
+from scipy import stats
+import numpy as np
+from collections import deque
 from tqdm import tqdm
-import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, Tuple, Optional
+
+
+class ConvergenceMonitor:
+    """Monitor MCMC convergence using multiple diagnostics"""
+    
+    def __init__(self, patience: int = 100, window_size: int = 50):
+        self.patience = patience
+        self.window_size = window_size
+        self.metrics_history = {
+            'log_likelihood': deque(maxlen=window_size * 2),
+            'rmse': deque(maxlen=window_size * 2),
+            'param_norm_U': deque(maxlen=window_size * 2),
+            'param_norm_V': deque(maxlen=window_size * 2)
+        }
+        self.best_rmse = float('inf')
+        self.patience_counter = 0
+        
+    def compute_log_likelihood(self, U: torch.Tensor, V: torch.Tensor, 
+                              R: torch.Tensor, mask: torch.Tensor, 
+                              alpha: float = 2.0) -> float:
+        """Compute log-likelihood of the data"""
+        pred = torch.sigmoid(U @ V.T)
+        mse = ((pred - R) * mask).pow(2).sum()
+        log_lik = -0.5 * alpha * mse
+        return log_lik.item()
+    
+    def check_convergence(self, U: torch.Tensor, V: torch.Tensor, 
+                         R: torch.Tensor, mask: torch.Tensor,
+                         R_test: Optional[torch.Tensor] = None, 
+                         mask_test: Optional[torch.Tensor] = None) -> Tuple[bool, Dict]:
+        """Check multiple convergence criteria"""
+        
+        # 1. Log-likelihood
+        log_lik = self.compute_log_likelihood(U, V, R, mask)
+        self.metrics_history['log_likelihood'].append(log_lik)
+        
+        # 2. Parameter norms
+        u_norm = torch.norm(U).item()
+        v_norm = torch.norm(V).item()
+        self.metrics_history['param_norm_U'].append(u_norm)
+        self.metrics_history['param_norm_V'].append(v_norm)
+        
+        # 3. Test RMSE if available
+        rmse_test = None
+        if R_test is not None and mask_test is not None:
+            pred_test = torch.sigmoid(U @ V.T)
+            rmse_test = torch.sqrt(
+                ((pred_test - R_test) * mask_test).pow(2).sum() / mask_test.sum()
+            ).item()
+            self.metrics_history['rmse'].append(rmse_test)
+            
+            # Update patience counter
+            if rmse_test < self.best_rmse:
+                self.best_rmse = rmse_test
+                self.patience_counter = 0
+            else:
+                self.patience_counter += 1
+        
+        diagnostics = {
+            'log_likelihood': log_lik,
+            'param_norm_U': u_norm,
+            'param_norm_V': v_norm,
+            'rmse_test': rmse_test,
+            'patience_counter': self.patience_counter
+        }
+        
+        # Need enough samples before checking convergence
+        if len(self.metrics_history['log_likelihood']) < self.window_size * 2:
+            return False, diagnostics
+        
+        # 4. Geweke diagnostic
+        recent = list(self.metrics_history['log_likelihood'])[-self.window_size:]
+        older = list(self.metrics_history['log_likelihood'])[-2*self.window_size:-self.window_size]
+        
+        geweke_z = abs(np.mean(recent) - np.mean(older)) / \
+                   np.sqrt(np.var(recent)/len(recent) + np.var(older)/len(older))
+        diagnostics['geweke_z'] = geweke_z
+        
+        # 5. Parameter stability
+        recent_u = list(self.metrics_history['param_norm_U'])[-self.window_size:]
+        rel_change_u = np.std(recent_u) / np.mean(recent_u) if np.mean(recent_u) > 0 else 0
+        diagnostics['param_stability'] = rel_change_u
+        
+        # Convergence criteria
+        converged = (
+            geweke_z < 2.0 and  # Geweke test
+            rel_change_u < 0.01  # Parameter stability
+        ) or (
+            self.patience_counter >= self.patience  # Early stopping
+        )
+        
+        if self.patience_counter >= self.patience:
+            diagnostics['early_stopped'] = True
+        
+        return converged, diagnostics
+
 
 class BayesianPMF_MCMC:
-    """Bayesian Probabilistic Matrix Factorization with MCMC sampling"""
+    """Bayesian PMF with MCMC following Salakhutdinov & Mnih 2008"""
     
-    def __init__(self, n_users: int, n_items: int, k: int = 5, alpha: float = 2.0,
-                 mu_0: float = 0.0, beta_0: float = 1.0, nu_0: Optional[int] = None, 
-                 W_0: Optional[torch.Tensor] = None):
+    def __init__(self, n_users: int, n_items: int, k: int = 5, 
+                 alpha: float = 2.0, beta_0: float = 2.0):
         self.n_users = n_users
         self.n_items = n_items
         self.k = k
-        self.alpha = alpha
+        self.alpha = alpha  # Observation precision
         
-        # Hyperprior parameters
-        self.mu_0 = mu_0
+        # Hyperprior parameters (Section 3.1 of paper)
+        self.mu_0 = torch.zeros(k)
         self.beta_0 = beta_0
-        self.nu_0 = nu_0 if nu_0 is not None else k + 2  # Ensure positive definite
-        self.W_0 = W_0 if W_0 is not None else torch.eye(k) * 2.0  # More stable
+        self.nu_0 = k  # Degrees of freedom
+        self.W_0 = torch.eye(k)  # Scale matrix
         
-        # Initialize parameters
-        self.U = torch.randn(n_users, k) * 0.1
-        self.V = torch.randn(n_items, k) * 0.1
+        # Initialize parameters with small random values
+        self.U = torch.randn(n_users, k) * 0.01
+        self.V = torch.randn(n_items, k) * 0.01
         
         # Initialize hyperparameters
         self.mu_U = torch.zeros(k)
-        self.Lambda_U = torch.eye(k)
+        self.Lambda_U = torch.eye(k) * 2.0
         self.mu_V = torch.zeros(k)
-        self.Lambda_V = torch.eye(k)
+        self.Lambda_V = torch.eye(k) * 2.0
+        
+        self.map_trained = False
     
-    def sample_user_factors(self, R_normalized: torch.Tensor, mask: torch.Tensor):
-        """Fully vectorized user factor sampling"""
-        # Get all observed ratings at once
-        user_indices, item_indices = mask.nonzero(as_tuple=True)
+    def train_map(self, R: torch.Tensor, mask: torch.Tensor, 
+                  n_epochs: int = 50, lr: float = 0.01, 
+                  lambda_reg: float = 0.01, verbose: bool = True) -> Dict:
+        """Train MAP estimate for initialization"""
         
-        # Create sparse representation for efficient computation
-        n_ratings_per_user = mask.sum(dim=1)  # (n_users,)
-        max_ratings = n_ratings_per_user.max().item()
+        if self.map_trained:
+            print("MAP already trained, skipping...")
+            return {}
         
-        if max_ratings == 0:
-            # All users have no ratings - sample from prior
-            self.U = dist.MultivariateNormal(
-                self.mu_U.unsqueeze(0).expand(self.n_users, -1),
-                torch.inverse(self.Lambda_U).unsqueeze(0).expand(self.n_users, -1, -1)
-            ).sample()
-            return
+        # Make parameters trainable
+        self.U = torch.nn.Parameter(self.U)
+        self.V = torch.nn.Parameter(self.V)
         
-        # Pre-compute precision matrices for all users
-        Lambda_users = self.Lambda_U.unsqueeze(0).expand(self.n_users, -1, -1).clone()
-        mu_users = torch.zeros(self.n_users, self.k)
+        optimizer = optim.Adam([self.U, self.V], lr=lr)
         
-        # Vectorized computation using scatter operations
-        for i in range(self.n_users):
-            rated_items = mask[i].nonzero(as_tuple=True)[0]
+        losses = []
+        best_loss = float('inf')
+        
+        for epoch in range(n_epochs):
+            optimizer.zero_grad()
             
-            if len(rated_items) > 0:
-                V_rated = self.V[rated_items]  # (n_rated, k)
-                ratings_i = R_normalized[i, rated_items]  # (n_rated,)
-                
-                # Update precision matrix
-                Lambda_users[i] += self.alpha * torch.mm(V_rated.T, V_rated)
-                
-                # Update mean
-                mu_users[i] = torch.linalg.solve(
-                    Lambda_users[i],
-                    torch.mv(self.Lambda_U, self.mu_U) + self.alpha * torch.mv(V_rated.T, ratings_i)
-                )
-            else:
-                # No ratings - use prior
-                mu_users[i] = self.mu_U
-        
-        # Batch sample all users at once
-        try:
-            # Add small regularization for numerical stability
-            Lambda_users += torch.eye(self.k).unsqueeze(0) * 1e-6
+            # Prediction
+            pred = torch.sigmoid(self.U @ self.V.T)
             
-            # Sample all users in one go
-            self.U = dist.MultivariateNormal(
-                mu_users,
-                torch.inverse(Lambda_users)
-            ).sample()
-        except:
-            # Fallback: sample individually if batch fails
-            for i in range(self.n_users):
-                try:
-                    self.U[i] = dist.MultivariateNormal(
-                        mu_users[i],
-                        torch.inverse(Lambda_users[i])
-                    ).sample()
-                except:
-                    # Ultimate fallback to prior
-                    self.U[i] = dist.MultivariateNormal(
-                        self.mu_U,
-                        torch.inverse(self.Lambda_U)
-                    ).sample()
-    
-    def sample_item_factors(self, R_normalized: torch.Tensor, mask: torch.Tensor):
-        """Fully vectorized item factor sampling"""
-        # Get all observed ratings at once
-        user_indices, item_indices = mask.nonzero(as_tuple=True)
-        
-        # Create sparse representation
-        n_ratings_per_item = mask.sum(dim=0)  # (n_items,)
-        max_ratings = n_ratings_per_item.max().item()
-        
-        if max_ratings == 0:
-            # All items have no ratings - sample from prior
-            self.V = dist.MultivariateNormal(
-                self.mu_V.unsqueeze(0).expand(self.n_items, -1),
-                torch.inverse(self.Lambda_V).unsqueeze(0).expand(self.n_items, -1, -1)
-            ).sample()
-            return
-        
-        # Pre-compute precision matrices for all items
-        Lambda_items = self.Lambda_V.unsqueeze(0).expand(self.n_items, -1, -1).clone()
-        mu_items = torch.zeros(self.n_items, self.k)
-        
-        # Vectorized computation
-        for j in range(self.n_items):
-            rating_users = mask[:, j].nonzero(as_tuple=True)[0]
+            # Loss: MSE + L2 regularization
+            mse = ((pred - R) * mask).pow(2).sum() / mask.sum()
+            reg = lambda_reg * (self.U.pow(2).sum() + self.V.pow(2).sum())
+            loss = mse + reg
             
-            if len(rating_users) > 0:
-                U_raters = self.U[rating_users]  # (n_raters, k)
-                ratings_j = R_normalized[rating_users, j]  # (n_raters,)
-                
-                # Update precision matrix
-                Lambda_items[j] += self.alpha * torch.mm(U_raters.T, U_raters)
-                
-                # Update mean
-                mu_items[j] = torch.linalg.solve(
-                    Lambda_items[j],
-                    torch.mv(self.Lambda_V, self.mu_V) + self.alpha * torch.mv(U_raters.T, ratings_j)
-                )
-            else:
-                # No ratings - use prior
-                mu_items[j] = self.mu_V
-        
-        # Batch sample all items at once
-        try:
-            # Add small regularization for numerical stability
-            Lambda_items += torch.eye(self.k).unsqueeze(0) * 1e-6
+            loss.backward()
+            optimizer.step()
             
-            # Sample all items in one go
-            self.V = dist.MultivariateNormal(
-                mu_items,
-                torch.inverse(Lambda_items)
-            ).sample()
-        except:
-            # Fallback: sample individually if batch fails
-            for j in range(self.n_items):
-                try:
-                    self.V[j] = dist.MultivariateNormal(
-                        mu_items[j],
-                        torch.inverse(Lambda_items[j])
-                    ).sample()
-                except:
-                    # Ultimate fallback to prior
-                    self.V[j] = dist.MultivariateNormal(
-                        self.mu_V,
-                        torch.inverse(self.Lambda_V)
-                    ).sample()
-    
-    def sample_user_hyperparams(self):
-        """Stabilized user hyperparameter sampling"""
-        N = self.n_users
-        U_bar = self.U.mean(0)
+            losses.append(loss.item())
+            
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+            
+            if verbose and epoch % 10 == 0:
+                print(f"MAP Epoch {epoch}: Loss = {loss.item():.4f}, MSE = {mse.item():.4f}")
         
-        # Update Gaussian parameters
-        beta_star = self.beta_0 + N
-        mu_star = (self.beta_0 * self.mu_0 + N * U_bar) / beta_star
-        
-        # Update Wishart parameters with better numerical stability
-        nu_star = self.nu_0 + N
-        U_centered = self.U - U_bar.unsqueeze(0)
-        S = torch.mm(U_centered.T, U_centered)
-        
-        # More stable computation
-        term = (self.beta_0 * N / beta_star) * torch.outer(self.mu_0 - U_bar, self.mu_0 - U_bar)
-        W_star = torch.inverse(torch.inverse(self.W_0) + S + term)
-        
-        # Add regularization to prevent singular matrices
-        W_star += torch.eye(self.k) * 1e-6
-        
-        try:
-            # Sample precision matrix with better parameters
-            self.Lambda_U = dist.Wishart(nu_star, W_star).sample()
-        except:
-            # Fallback to more stable sampling
-            self.Lambda_U = torch.eye(self.k) + torch.randn(self.k, self.k) * 0.1
-            self.Lambda_U = torch.mm(self.Lambda_U, self.Lambda_U.T)  # Ensure PSD
-        
-        try:
-            # Sample mean
-            self.mu_U = dist.MultivariateNormal(
-                mu_star, 
-                torch.inverse(beta_star * self.Lambda_U + torch.eye(self.k) * 1e-6)
-            ).sample()
-        except:
-            self.mu_U = mu_star  # Fallback to MAP estimate
-    
-    def sample_item_hyperparams(self):
-        """Stabilized item hyperparameter sampling"""
-        M = self.n_items
-        V_bar = self.V.mean(0)
-        
-        # Update Gaussian parameters
-        beta_star = self.beta_0 + M
-        mu_star = (self.beta_0 * self.mu_0 + M * V_bar) / beta_star
-        
-        # Update Wishart parameters with better numerical stability
-        nu_star = self.nu_0 + M
-        V_centered = self.V - V_bar.unsqueeze(0)
-        S = torch.mm(V_centered.T, V_centered)
-        
-        # More stable computation
-        term = (self.beta_0 * M / beta_star) * torch.outer(self.mu_0 - V_bar, self.mu_0 - V_bar)
-        W_star = torch.inverse(torch.inverse(self.W_0) + S + term)
-        
-        # Add regularization
-        W_star += torch.eye(self.k) * 1e-6
-        
-        try:
-            # Sample precision matrix
-            self.Lambda_V = dist.Wishart(nu_star, W_star).sample()
-        except:
-            # Fallback to more stable sampling
-            self.Lambda_V = torch.eye(self.k) + torch.randn(self.k, self.k) * 0.1
-            self.Lambda_V = torch.mm(self.Lambda_V, self.Lambda_V.T)  # Ensure PSD
-        
-        try:
-            # Sample mean
-            self.mu_V = dist.MultivariateNormal(
-                mu_star,
-                torch.inverse(beta_star * self.Lambda_V + torch.eye(self.k) * 1e-6)
-            ).sample()
-        except:
-            self.mu_V = mu_star  # Fallback to MAP estimate
-    
-    def gibbs_sample(self, R_normalized: torch.Tensor, mask: torch.Tensor, 
-                     n_samples: int = 1000, burn_in: int = 200, verbose: bool = True) -> Dict:
-        """Run Gibbs sampling with progress tracking"""
-        samples = {
-            'U': [],
-            'V': [],
-            'mu_U': [],
-            'mu_V': [],
-            'Lambda_U': [],
-            'Lambda_V': []
-        }
-        
-        total_iterations = n_samples + burn_in
+        # Convert back to regular tensors
+        self.U = self.U.detach()
+        self.V = self.V.detach()
+        self.map_trained = True
         
         if verbose:
-            pbar = tqdm(total=total_iterations, desc="MCMC Sampling")
+            print(f"MAP training complete! Best loss: {best_loss:.4f}")
         
-        for i in range(total_iterations):
-            # Gibbs sampling steps
+        return {'losses': losses, 'final_U': self.U.clone(), 'final_V': self.V.clone()}
+    
+    def sample_user_factors(self, R: torch.Tensor, mask: torch.Tensor):
+        """Sample user factors following Eq. 11-13 from the paper"""
+        
+        for i in range(self.n_users):
+            # Get observed items for user i
+            observed_items = mask[i].nonzero(as_tuple=True)[0]
+            
+            if len(observed_items) == 0:
+                # Sample from prior
+                cov = torch.inverse(self.Lambda_U + torch.eye(self.k) * 1e-6)
+                self.U[i] = dist.MultivariateNormal(self.mu_U, cov).sample()
+            else:
+                # Compute posterior parameters (Eq. 12-13)
+                V_obs = self.V[observed_items]  # (n_obs, k)
+                r_obs = R[i, observed_items]  # (n_obs,)
+                
+                # Equation 12: Posterior precision
+                Lambda_i = self.Lambda_U + self.alpha * (V_obs.T @ V_obs)
+                
+                # Equation 13: Posterior mean  
+                b = self.Lambda_U @ self.mu_U + self.alpha * (V_obs.T @ r_obs)
+                mu_i = torch.linalg.solve(Lambda_i + torch.eye(self.k) * 1e-6, b)
+                
+                # Sample from posterior
+                try:
+                    cov_i = torch.inverse(Lambda_i + torch.eye(self.k) * 1e-6)
+                    self.U[i] = dist.MultivariateNormal(mu_i, cov_i).sample()
+                except:
+                    # Fallback for numerical stability
+                    self.U[i] = mu_i + torch.randn(self.k) * 0.01
+    
+    def sample_item_factors(self, R: torch.Tensor, mask: torch.Tensor):
+        """Sample item factors - symmetric to user factors"""
+        
+        for j in range(self.n_items):
+            observed_users = mask[:, j].nonzero(as_tuple=True)[0]
+            
+            if len(observed_users) == 0:
+                cov = torch.inverse(self.Lambda_V + torch.eye(self.k) * 1e-6)
+                self.V[j] = dist.MultivariateNormal(self.mu_V, cov).sample()
+            else:
+                U_obs = self.U[observed_users]
+                r_obs = R[observed_users, j]
+                
+                Lambda_j = self.Lambda_V + self.alpha * (U_obs.T @ U_obs)
+                b = self.Lambda_V @ self.mu_V + self.alpha * (U_obs.T @ r_obs)
+                mu_j = torch.linalg.solve(Lambda_j + torch.eye(self.k) * 1e-6, b)
+                
+                try:
+                    cov_j = torch.inverse(Lambda_j + torch.eye(self.k) * 1e-6)
+                    self.V[j] = dist.MultivariateNormal(mu_j, cov_j).sample()
+                except:
+                    self.V[j] = mu_j + torch.randn(self.k) * 0.01
+    
+    def sample_user_hyperparams(self):
+        """Sample hyperparameters following Eq. 14 from the paper"""
+        N = self.n_users
+        
+        # Compute sufficient statistics
+        U_bar = self.U.mean(0)
+        S = (self.U.T @ self.U) / N
+        
+        # Posterior parameters for Normal-Wishart
+        beta_star = self.beta_0 + N
+        mu_star = (self.beta_0 * self.mu_0 + N * U_bar) / beta_star
+        nu_star = self.nu_0 + N
+        
+        # Update W_star (Eq. 14)
+        diff = U_bar - self.mu_0
+        W_star_inv = torch.inverse(self.W_0) + N * S + \
+                     (self.beta_0 * N / beta_star) * torch.outer(diff, diff)
+        
+        # Ensure numerical stability
+        W_star_inv = (W_star_inv + W_star_inv.T) / 2
+        W_star = torch.inverse(W_star_inv + torch.eye(self.k) * 1e-6)
+        W_star = (W_star + W_star.T) / 2  # Ensure symmetry
+        
+        # Sample Lambda_U from Wishart
+        try:
+            # Ensure positive definite
+            eigvals = torch.linalg.eigvalsh(W_star)
+            if eigvals.min() > 1e-6:
+                self.Lambda_U = torch.from_numpy(
+                    stats.wishart.rvs(df=nu_star, scale=W_star.numpy())
+                ).float()
+            else:
+                self.Lambda_U = torch.eye(self.k) * 2.0
+        except:
+            self.Lambda_U = torch.eye(self.k) * 2.0
+        
+        # Sample mu_U from Normal
+        try:
+            cov_mu = torch.inverse(beta_star * self.Lambda_U + torch.eye(self.k) * 1e-6)
+            self.mu_U = dist.MultivariateNormal(mu_star, cov_mu).sample()
+        except:
+            self.mu_U = mu_star
+    
+    def sample_item_hyperparams(self):
+        """Sample item hyperparameters - symmetric to user hyperparams"""
+        M = self.n_items
+        
+        V_bar = self.V.mean(0)
+        S = (self.V.T @ self.V) / M
+        
+        beta_star = self.beta_0 + M
+        mu_star = (self.beta_0 * self.mu_0 + M * V_bar) / beta_star
+        nu_star = self.nu_0 + M
+        
+        diff = V_bar - self.mu_0
+        W_star_inv = torch.inverse(self.W_0) + M * S + \
+                     (self.beta_0 * M / beta_star) * torch.outer(diff, diff)
+        
+        W_star_inv = (W_star_inv + W_star_inv.T) / 2
+        W_star = torch.inverse(W_star_inv + torch.eye(self.k) * 1e-6)
+        W_star = (W_star + W_star.T) / 2
+        
+        try:
+            eigvals = torch.linalg.eigvalsh(W_star)
+            if eigvals.min() > 1e-6:
+                self.Lambda_V = torch.from_numpy(
+                    stats.wishart.rvs(df=nu_star, scale=W_star.numpy())
+                ).float()
+            else:
+                self.Lambda_V = torch.eye(self.k) * 2.0
+        except:
+            self.Lambda_V = torch.eye(self.k) * 2.0
+        
+        try:
+            cov_mu = torch.inverse(beta_star * self.Lambda_V + torch.eye(self.k) * 1e-6)
+            self.mu_V = dist.MultivariateNormal(mu_star, cov_mu).sample()
+        except:
+            self.mu_V = mu_star
+    
+    def gibbs_sample(self, R: torch.Tensor, mask: torch.Tensor,
+                     R_test: Optional[torch.Tensor] = None,
+                     mask_test: Optional[torch.Tensor] = None,
+                     n_samples: int = 1500, 
+                     burn_in: int = 500,
+                     use_map_init: bool = True,
+                     check_convergence: bool = True,
+                     min_samples: int = 200,
+                     check_every: int = 10,
+                     verbose: bool = True) -> Dict:
+        """
+        Adaptive Gibbs sampling with optional convergence monitoring
+        
+        Args:
+            R: Training ratings matrix (normalized to [0,1])
+            mask: Training mask indicating observed ratings
+            R_test: Test ratings for convergence monitoring
+            mask_test: Test mask
+            n_samples: Maximum number of samples to collect
+            burn_in: Number of burn-in samples
+            use_map_init: Whether to use MAP initialization
+            check_convergence: Whether to use adaptive stopping
+            min_samples: Minimum samples before checking convergence
+            check_every: How often to check convergence
+            verbose: Whether to print progress
+        """
+        
+        # MAP initialization if requested
+        if use_map_init and not self.map_trained:
+            print("Training MAP initialization...")
+            self.train_map(R, mask, verbose=verbose)
+        
+        # Initialize convergence monitor if needed
+        monitor = ConvergenceMonitor() if check_convergence else None
+        
+        # Storage for samples
+        samples = {
+            'U': [], 'V': [], 
+            'mu_U': [], 'mu_V': [], 
+            'Lambda_U': [], 'Lambda_V': []
+        }
+        
+        # Progress bar
+        total_iterations = n_samples + burn_in
+        pbar = tqdm(total=total_iterations, desc="Gibbs Sampling")
+        
+        converged = False
+        actual_samples = 0
+        
+        for t in range(total_iterations):
+            # Gibbs sampling steps (following paper's algorithm)
             self.sample_user_hyperparams()
             self.sample_item_hyperparams()
-            self.sample_user_factors(R_normalized, mask)
-            self.sample_item_factors(R_normalized, mask)
+            self.sample_user_factors(R, mask)
+            self.sample_item_factors(R, mask)
             
             # Store samples after burn-in
-            if i >= burn_in:
+            if t >= burn_in:
                 samples['U'].append(self.U.clone())
                 samples['V'].append(self.V.clone())
                 samples['mu_U'].append(self.mu_U.clone())
                 samples['mu_V'].append(self.mu_V.clone())
                 samples['Lambda_U'].append(self.Lambda_U.clone())
                 samples['Lambda_V'].append(self.Lambda_V.clone())
+                actual_samples += 1
+                
+                # Check convergence if enabled
+                if (check_convergence and 
+                    actual_samples >= min_samples and 
+                    actual_samples % check_every == 0):
+                    
+                    converged, diagnostics = monitor.check_convergence(
+                        self.U, self.V, R, mask, R_test, mask_test
+                    )
+                    
+                    # Update progress bar
+                    postfix = {
+                        'samples': actual_samples,
+                        'LL': f"{diagnostics['log_likelihood']:.1f}",
+                    }
+                    if diagnostics['rmse_test'] is not None:
+                        postfix['RMSE'] = f"{diagnostics['rmse_test']:.4f}"
+                    if 'geweke_z' in diagnostics:
+                        postfix['Geweke'] = f"{diagnostics['geweke_z']:.2f}"
+                    
+                    pbar.set_postfix(postfix)
+                    
+                    if converged:
+                        print(f"\nConverged after {t+1} iterations ({actual_samples} samples)!")
+                        if verbose:
+                            for key, value in diagnostics.items():
+                                if value is not None:
+                                    print(f"  {key}: {value:.4f}" if isinstance(value, float) else f"  {key}: {value}")
+                        break
             
-            if verbose:
-                phase = "Burn-in" if i < burn_in else f"Sampling ({i - burn_in + 1}/{n_samples})"
-                pbar.set_description(phase)
-                pbar.update(1)
+            pbar.update(1)
         
-        if verbose:
-            pbar.close()
+        pbar.close()
         
-        return samples
+        if not converged and check_convergence:
+            print(f"Reached maximum iterations without convergence")
+        
+        result = {
+            'samples': samples,
+            'n_iterations': t + 1,
+            'n_samples': actual_samples,
+            'converged': converged
+        }
+        
+        if monitor is not None:
+            result['diagnostics'] = dict(monitor.metrics_history)
+        
+        return result

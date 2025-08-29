@@ -46,6 +46,7 @@ services:
       - dragonfly
     environment:
       - REDIS_URL=redis://dragonfly:6379
+      - ENVIRONMENT=${ENVIRONMENT:-development}
     profiles:
       - batch  # Only run when explicitly requested
 
