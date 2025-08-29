@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Dict
 
 from ..utils.data_processor import BookDataProcessor
-from ..models.bayesian_mf import BayesianMatrixFactorization
-from ..models.recommender import BayesianRecommender
+from ..models.bayesian_mcmc import BayesianPMF_MCMC
+from ..models.mcmc_recommender import MCMCRecommender
 
 
 class BatchProcessor:
-    """Batch processing service for model training and precomputation"""
+    """Batch processing service for MCMC model training and precomputation"""
     
     def __init__(self, redis_url: str = None, data_path: str = "./data"):
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -24,15 +24,15 @@ class BatchProcessor:
         
     def run_full_pipeline(self, min_book_ratings: int = 50, 
                          min_user_ratings: int = 20,
-                         k: int = 5,
-                         max_epochs: int = 500,
-                         learning_rate: float = 0.001,
-                         top_k_recs: int = 10,
-                         n_samples: int = 500) -> Dict:
-        """Run the complete training and precomputation pipeline"""
+                         k: int = 10,
+                         n_samples: int = 1500,
+                         burn_in: int = 500,
+                         alpha: float = 2.0,
+                         top_k_recs: int = 10) -> Dict:
+        """Run the complete MCMC training and precomputation pipeline"""
         
         print("=" * 60)
-        print(f"BATCH PROCESSING STARTED: {datetime.now()}")
+        print(f"MCMC BATCH PROCESSING STARTED: {datetime.now()}")
         print("=" * 60)
         
         # Step 1: Data preprocessing
@@ -46,31 +46,33 @@ class BatchProcessor:
         print("\n2. CREATING RATING MATRICES...")
         matrices = self.data_processor.create_rating_matrix(filtered_data)
         
-        # Step 3: Train model
-        print("\n3. TRAINING BAYESIAN MATRIX FACTORIZATION...")
-        self.model = BayesianMatrixFactorization(
+        # Step 3: Create MCMC model
+        print(f"\n3. CREATING BAYESIAN MCMC MODEL (k={k})...")
+        self.model = BayesianPMF_MCMC(
             n_users=matrices['n_users'],
             n_items=matrices['n_items'],
-            k=k
+            k=k,
+            alpha=alpha
         )
         
-        training_results = self.model.train(
-            matrices['R_normalized'],
-            matrices['mask_tensor'],
-            max_epochs=max_epochs,
-            learning_rate=learning_rate,
-            verbose=True
-        )
-        
-        # Step 4: Create recommender
-        print("\n4. CREATING RECOMMENDATION SERVICE...")
-        self.recommender = BayesianRecommender(
+        # Step 4: Create MCMC recommender
+        print("\n4. CREATING MCMC RECOMMENDATION SERVICE...")
+        self.recommender = MCMCRecommender(
             model=self.model,
             book_titles=matrices['book_titles']
         )
         
-        # Step 5: Evaluate model
-        print("\n5. EVALUATING MODEL PERFORMANCE...")
+        # Step 5: Train with MCMC sampling
+        print(f"\n5. TRAINING WITH MCMC ({n_samples} samples, {burn_in} burn-in)...")
+        training_results = self.recommender.train(
+            matrices['R_normalized'],
+            matrices['mask_tensor'],
+            n_samples=n_samples,
+            burn_in=burn_in
+        )
+        
+        # Step 6: Evaluate model
+        print("\n6. EVALUATING MODEL PERFORMANCE...")
         evaluation_metrics = self.recommender.evaluate_model(
             matrices['R_test_normalized'],
             matrices['mask_test_tensor']
@@ -79,23 +81,23 @@ class BatchProcessor:
         print(f"Test RMSE (1-10 scale): {evaluation_metrics['rmse_original_scale']}")
         print(f"Test MAE (1-10 scale): {evaluation_metrics['mae_original_scale']}")
         
-        # Step 6: Generate all recommendations
-        print("\n6. GENERATING RECOMMENDATIONS FOR ALL USERS...")
+        # Step 7: Generate all recommendations
+        print("\n7. GENERATING RECOMMENDATIONS FOR ALL USERS...")
         all_recommendations = self.recommender.generate_all_recommendations(
             matrices['mask_tensor'],
-            top_k=top_k_recs,
-            n_samples=n_samples
+            top_k=top_k_recs
         )
         
-        # Step 7: Store in Redis/Dragonfly
-        print("\n7. STORING RECOMMENDATIONS IN DRAGONFLY...")
+        # Step 8: Store in Redis/Dragonfly
+        print("\n8. STORING RECOMMENDATIONS IN DRAGONFLY...")
         stored_count = self._store_recommendations_in_redis(
             all_recommendations, matrices
         )
         
-        # Step 8: Store model metadata
-        print("\n8. STORING MODEL METADATA...")
-        self._store_model_metadata(training_results, evaluation_metrics, matrices)
+        # Step 9: Store model metadata
+        print("\n9. STORING MODEL METADATA...")
+        self._store_model_metadata(training_results, evaluation_metrics, matrices, 
+                                 k, n_samples, burn_in)
         
         pipeline_results = {
             'timestamp': datetime.now().isoformat(),
@@ -110,15 +112,16 @@ class BatchProcessor:
             'recommendations_stored': stored_count,
             'model_parameters': {
                 'k': k,
+                'n_samples': n_samples,
+                'burn_in': burn_in,
+                'alpha': alpha,
                 'min_book_ratings': min_book_ratings,
-                'min_user_ratings': min_user_ratings,
-                'max_epochs': max_epochs,
-                'learning_rate': learning_rate
+                'min_user_ratings': min_user_ratings
             }
         }
         
         print("\n" + "=" * 60)
-        print(f"BATCH PROCESSING COMPLETED: {datetime.now()}")
+        print(f"MCMC BATCH PROCESSING COMPLETED: {datetime.now()}")
         print(f"Recommendations stored for {stored_count} users")
         print("=" * 60)
         
@@ -150,22 +153,32 @@ class BatchProcessor:
         return stored_count
     
     def _store_model_metadata(self, training_results: Dict, 
-                            evaluation_metrics: Dict, matrices: Dict):
+                            evaluation_metrics: Dict, matrices: Dict,
+                            k: int, n_samples: int, burn_in: int):
         """Store model metadata and statistics"""
         
         metadata = {
             'last_updated': datetime.now().isoformat(),
+            'model_type': 'MCMC',
             'model_performance': evaluation_metrics,
             'training_info': {
-                'final_elbo': training_results['final_elbo'],
+                'training_time': training_results['training_time'],
+                'n_samples': training_results['n_samples'],
+                'burn_in': training_results['burn_in'],
                 'converged_epoch': training_results['converged_epoch'],
-                'total_epochs': len(training_results['elbo_history'])
+                'final_elbo': training_results.get('final_elbo', 0.0),
+                'elbo_history': training_results.get('elbo_history', [])
             },
             'dataset_info': {
                 'n_users': matrices['n_users'],
                 'n_items': matrices['n_items'],
                 'sparsity': 1 - (matrices['mask_tensor'].sum().item() / 
                                (matrices['n_users'] * matrices['n_items']))
+            },
+            'model_params': {
+                'k': k,
+                'n_samples': n_samples,
+                'burn_in': burn_in
             }
         }
         
@@ -215,18 +228,18 @@ def main():
         results = processor.run_full_pipeline(
             min_book_ratings=50,
             min_user_ratings=20,
-            k=5,
-            max_epochs=500,
-            learning_rate=0.001,
-            top_k_recs=10,
-            n_samples=500
+            k=10,
+            n_samples=1500,
+            burn_in=500,
+            alpha=2.0,
+            top_k_recs=10
         )
         
-        print("\nPipeline completed successfully!")
+        print("\nMCMC Pipeline completed successfully!")
         return results
         
     except Exception as e:
-        print(f"Pipeline failed with error: {str(e)}")
+        print(f"MCMC Pipeline failed with error: {str(e)}")
         raise
 
 
