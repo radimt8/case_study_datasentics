@@ -4,6 +4,7 @@ numpy==1.24.3
 torch==2.1.2
 scikit-learn==1.3.2
 kaggle==1.5.16
+tqdm==4.66.1
 
 # API dependencies (production)
 fastapi==0.104.1

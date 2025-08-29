@@ -165,9 +165,7 @@ class BatchProcessor:
                 'training_time': training_results['training_time'],
                 'n_samples': training_results['n_samples'],
                 'burn_in': training_results['burn_in'],
-                'converged_epoch': training_results['converged_epoch'],
-                'final_elbo': training_results.get('final_elbo', 0.0),
-                'elbo_history': training_results.get('elbo_history', [])
+                'total_iterations': training_results['total_iterations']
             },
             'dataset_info': {
                 'n_users': matrices['n_users'],
@@ -178,7 +176,8 @@ class BatchProcessor:
             'model_params': {
                 'k': k,
                 'n_samples': n_samples,
-                'burn_in': burn_in
+                'burn_in': burn_in,
+                'alpha': 2.0
             }
         }
         

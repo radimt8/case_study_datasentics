@@ -17,34 +17,21 @@ class MCMCRecommender:
         """Train the MCMC model"""
         print(f"Training MCMC with {n_samples} samples, {burn_in} burn-in...")
         
-        start_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
-        end_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
-        
-        if start_time:
-            start_time.record()
-        else:
-            import time
-            start_time = time.time()
+        import time
+        start_time = time.time()
         
         # Run MCMC sampling
         self.samples = self.model.gibbs_sample(
             R_normalized, mask, n_samples=n_samples, burn_in=burn_in, verbose=True
         )
         
-        if end_time:
-            end_time.record()
-            torch.cuda.synchronize()
-            training_time = start_time.elapsed_time(end_time) / 1000.0  # Convert to seconds
-        else:
-            training_time = time.time() - start_time
+        training_time = time.time() - start_time
         
         return {
             'training_time': training_time,
             'n_samples': n_samples,
             'burn_in': burn_in,
-            'converged_epoch': n_samples + burn_in,  # For compatibility
-            'final_elbo': 0.0,  # MCMC doesn't have ELBO
-            'elbo_history': []
+            'total_iterations': n_samples + burn_in
         }
     
     def mcmc_recommendations_with_uncertainty(self, user_idx: int, observed_mask: torch.Tensor, 
@@ -57,16 +44,19 @@ class MCMCRecommender:
         U_samples = torch.stack(self.samples['U'])  # (n_samples, n_users, k)
         V_samples = torch.stack(self.samples['V'])  # (n_samples, n_items, k)
         
-        # Get user's unrated items
-        user_mask = observed_mask[user_idx]
-        unrated_items = (~user_mask).to_numpy().nonzero()[0]
+        # Get user's unrated items - FIX HERE
+        user_mask = observed_mask[user_idx]  # This is a tensor
+        unrated_items = (~user_mask).nonzero(as_tuple=True)[0].cpu().numpy()  # Convert to numpy here
         
         if len(unrated_items) == 0:
             return {"error": "User has rated all items"}
         
+        # Convert back to tensor for indexing
+        unrated_items_tensor = torch.from_numpy(unrated_items).long()
+        
         # Vectorized prediction across all MCMC samples
         user_factors = U_samples[:, user_idx]  # (n_samples, k)
-        item_factors = V_samples[:, unrated_items]  # (n_samples, n_unrated, k)
+        item_factors = V_samples[:, unrated_items_tensor]  # (n_samples, n_unrated, k)
         
         # Compute predictions for all samples at once
         raw_preds = torch.einsum('sk,snk->sn', user_factors, item_factors)
@@ -92,16 +82,19 @@ class MCMCRecommender:
         lower_ci = torch.clamp(quantiles[0] * 9 + 1, 1, 10).tolist()
         upper_ci = torch.clamp(quantiles[1] * 9 + 1, 1, 10).tolist()
         
+        # Calculate uncertainty as actual half-width of CI (more intuitive)
+        ci_half_widths = [(upper - lower) / 2 for lower, upper in zip(lower_ci, upper_ci)]
+        
         return {
             'recommendations': [
                 {
                     'title': title,
                     'predicted_rating': round(rating, 2),
-                    'uncertainty': round(uncertainty, 2),
+                    'uncertainty': round(half_width, 2),  # Now matches CI half-width
                     'confidence_interval': [round(lower, 2), round(upper, 2)]
                 }
-                for title, rating, uncertainty, lower, upper in zip(
-                    book_titles, scaled_means, scaled_stds, lower_ci, upper_ci
+                for title, rating, half_width, lower, upper in zip(
+                    book_titles, scaled_means, ci_half_widths, lower_ci, upper_ci
                 )
             ]
         }
@@ -165,4 +158,3 @@ class MCMCRecommender:
             'mae_original_scale': mae.item() * 9,
             'n_test_ratings': len(test_preds)
         }
-

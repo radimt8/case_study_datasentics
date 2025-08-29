@@ -281,4 +281,3 @@ class BayesianPMF_MCMC:
             pbar.close()
         
         return samples
-
