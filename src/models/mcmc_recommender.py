@@ -82,7 +82,7 @@ class MCMCRecommender:
         item_factors = V_samples[:, unrated_items_tensor]  # (n_samples, n_unrated, k)
         
         raw_preds = torch.einsum('sk,snk->sn', user_factors, item_factors)
-        sigmoid_preds = torch.sigmoid(raw_preds)
+        sigmoid_preds = torch.sigmoid(raw_preds * 2) # Multiply by 2 for steeper sigmoid
         
         # Statistics
         pred_means = sigmoid_preds.mean(dim=0)
@@ -156,6 +156,14 @@ class MCMCRecommender:
         
         all_recommendations = {}
         n_users = observed_mask.shape[0]
+
+        U_mean = torch.stack(self.samples['U']).mean(dim=0)
+        
+        print(f"DEBUG: U shape: {U_mean.shape}")
+        print(f"DEBUG: U variance across users: {U_mean.var(dim=0).mean():.6f}")
+        print(f"DEBUG: U[0] vs U[1] difference: {(U_mean[0] - U_mean[1]).norm():.6f}")
+        print(f"DEBUG: U[0] mean: {U_mean[0].mean():.6f}, std: {U_mean[0].std():.6f}")
+        print(f"DEBUG: U[100] mean: {U_mean[100].mean():.6f}, std: {U_mean[100].std():.6f}")
         
         print(f"Generating recommendations for {n_users} users...")
         

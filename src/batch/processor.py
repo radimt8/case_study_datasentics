@@ -24,7 +24,7 @@ class BatchProcessor:
         
     def run_full_pipeline(self, min_book_ratings: int = 50,
                          min_user_ratings: int = 20,
-                         k: int = 10,
+                         k: int = 20,
                          n_samples: int = 1500,
                          burn_in: int = 100,
                          alpha: float = 2.0,
@@ -89,7 +89,7 @@ class BatchProcessor:
             mask_test=matrices.get('mask_test_tensor'),
             n_samples=n_samples,
             burn_in=burn_in,
-            use_map_init=True,
+            use_map_init=False,
             adaptive=use_adaptive,
             min_samples=min_samples_for_convergence,  # Dynamic minimum
             check_every=max(10, n_samples // 20)      # Dynamic check frequency
@@ -267,10 +267,10 @@ def main():
         config = {
             'min_book_ratings': 50,
             'min_user_ratings': 20,
-            'k': 10,
+            'k': 30,
             'n_samples': 1500,  # More samples for production
             'burn_in': 200,     # Longer burn-in
-            'alpha': 2.0,
+            'alpha': 1.0,
             'top_k_recs': 20,   # More recommendations stored
             'use_adaptive': True
         }
@@ -279,10 +279,10 @@ def main():
         config = {
             'min_book_ratings': 50,
             'min_user_ratings': 20,
-            'k': 10,
+            'k': 30,
             'n_samples': 500,
             'burn_in': 100,
-            'alpha': 2.0,
+            'alpha': 1.0,
             'top_k_recs': 15,
             'use_adaptive': True
         }
@@ -291,10 +291,10 @@ def main():
         config = {
             'min_book_ratings': 50,
             'min_user_ratings': 20,
-            'k': 10,
-            'n_samples': 200,   # Minimum for decent quality
-            'burn_in': 50,      # Reduced with MAP init
-            'alpha': 2.0,
+            'k': 30,
+            'n_samples': 50,   # Minimum for decent quality
+            'burn_in': 5,      # Reduced with MAP init
+            'alpha': 1.0,
             'top_k_recs': 10,
             'use_adaptive': True
         }

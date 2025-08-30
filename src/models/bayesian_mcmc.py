@@ -132,57 +132,79 @@ class BayesianPMF_MCMC:
         self.map_trained = False
     
     def train_map(self, R: torch.Tensor, mask: torch.Tensor, 
-                  n_epochs: int = 50, lr: float = 0.01, 
-                  lambda_reg: float = 0.01, verbose: bool = True) -> Dict:
+                  n_epochs: int = 50, lr: float = 0.005,  # Reduced LR
+                  lambda_reg: float = 0.001, verbose: bool = True) -> Dict:  # Much less regularization
         """Train MAP estimate for initialization"""
         
         if self.map_trained:
-            print("MAP already trained, skipping...")
             return {}
         
-        # Make parameters trainable
-        self.U = torch.nn.Parameter(self.U)
-        self.V = torch.nn.Parameter(self.V)
+        # Larger initialization
+        self.U = torch.randn(self.n_users, self.k) * 0.5  # Much larger
+        self.V = torch.randn(self.n_items, self.k) * 0.5
         
+        self.U.requires_grad = True
+        self.V.requires_grad = True
+        
+        # No weight decay in optimizer - we'll do it manually for better control
         optimizer = optim.Adam([self.U, self.V], lr=lr)
         
         losses = []
-        best_loss = float('inf')
         
         for epoch in range(n_epochs):
             optimizer.zero_grad()
             
-            # Prediction
-            pred = torch.sigmoid(self.U @ self.V.T)
+            # Linear prediction (no sigmoid) for MAP
+            pred = self.U @ self.V.T
             
-            # Loss: MSE + L2 regularization
-            mse = ((pred - R) * mask).pow(2).sum() / mask.sum()
-            reg = lambda_reg * (self.U.pow(2).sum() + self.V.pow(2).sum())
+            # Scale predictions to roughly match rating scale
+            pred = torch.sigmoid(pred) * 9 + 1  # Map to [1, 10]
+            
+            # MSE loss only on observed entries
+            diff = (pred - (R * 9 + 1)) * mask  # R is normalized, scale it back
+            mse = (diff ** 2).sum() / mask.sum()
+            
+            # Very light regularization
+            reg = lambda_reg * (self.U.norm() ** 2 + self.V.norm() ** 2) / (self.n_users + self.n_items)
+            
             loss = mse + reg
-            
             loss.backward()
+            
+            # No gradient clipping - let it learn
             optimizer.step()
             
             losses.append(loss.item())
             
-            if loss.item() < best_loss:
-                best_loss = loss.item()
-            
             if verbose and epoch % 10 == 0:
-                print(f"MAP Epoch {epoch}: Loss = {loss.item():.4f}, MSE = {mse.item():.4f}")
+                u_var = self.U.var(dim=0).mean().item()
+                v_var = self.V.var(dim=0).mean().item()
+                print(f"MAP Epoch {epoch}: Loss = {loss.item():.4f}, MSE = {mse.item():.4f}, U_var = {u_var:.6f}, V_var = {v_var:.6f}")
         
-        # Convert back to regular tensors
+        # Detach
         self.U = self.U.detach()
         self.V = self.V.detach()
+        
+        # Don't add noise if variance is reasonable
+        final_u_var = self.U.var(dim=0).mean().item()
+        final_v_var = self.V.var(dim=0).mean().item()
+        
+        if final_u_var < 0.01 or final_v_var < 0.01:
+            print(f"WARNING: Low variance after MAP (U: {final_u_var:.6f}, V: {final_v_var:.6f})")
+            print("Consider disabling MAP initialization or adjusting hyperparameters")
+        
         self.map_trained = True
         
         if verbose:
-            print(f"MAP training complete! Best loss: {best_loss:.4f}")
+            print(f"MAP training complete!")
+            print(f"Final U variance: {final_u_var:.6f}")
+            print(f"Final V variance: {final_v_var:.6f}")
         
-        return {'losses': losses, 'final_U': self.U.clone(), 'final_V': self.V.clone()}
+        return {'losses': losses}
     
     def sample_user_factors(self, R: torch.Tensor, mask: torch.Tensor):
         """Sample user factors following Eq. 11-13 from the paper"""
+
+        old_U = self.U.clone()
         
         for i in range(self.n_users):
             # Get observed items for user i
@@ -211,6 +233,11 @@ class BayesianPMF_MCMC:
                 except:
                     # Fallback for numerical stability
                     self.U[i] = mu_i + torch.randn(self.k) * 0.01
+
+        # Check if anything changed
+        change = (self.U - old_U).norm()
+        if change < 1e-6:
+            print(f"WARNING: User factors barely changed! Change norm: {change}")
     
     def sample_item_factors(self, R: torch.Tensor, mask: torch.Tensor):
         """Sample item factors - symmetric to user factors"""
