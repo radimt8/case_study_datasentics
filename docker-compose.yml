@@ -50,6 +50,22 @@ services:
     profiles:
       - batch  # Only run when explicitly requested
 
+  optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.optimizer
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./.env:/app/.env  # Mount .env file for writing
+    depends_on:
+      - dragonfly
+    environment:
+      - REDIS_URL=redis://dragonfly:6379
+      - OPTIMIZER_N_CALLS=${OPTIMIZER_N_CALLS:-15}
+    profiles:
+      - optimizer  # Only run when explicitly requested
+
   dragonfly:
     image: docker.dragonflydb.io/dragonflydb/dragonfly
     ports:

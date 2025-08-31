@@ -46,6 +46,38 @@ curl http://localhost:8000/recommend/8
 curl http://localhost:8000/users
 ```
 
+## Optimized Docker Build
+
+To avoid downloading PyTorch (~2GB+) multiple times across different containers, use the multi-stage base image approach:
+
+### Build Base Image First
+```bash
+# Build the base image with all heavy dependencies (PyTorch, NumPy, etc.)
+docker build -f Dockerfile.base -t bayesian-mcmc:base .
+```
+
+### Then Build Service Images
+```bash
+# Now all service builds are lightning fast (only copy source code)
+docker-compose build
+
+# Or build individual services
+docker build -f Dockerfile.api -t bayesian-mcmc-api .
+docker build -f Dockerfile.batch -t bayesian-mcmc-batch .
+docker build -f Dockerfile.optimizer -t bayesian-mcmc-optimizer .
+```
+
+### Benefits
+- **Bandwidth Savings**: Download PyTorch once, reuse across all services
+- **Faster Iteration**: Service rebuilds only copy source code (seconds vs minutes)
+- **Build Consistency**: Same dependency versions across all containers
+- **GPU Ready**: Especially valuable when preparing CUDA-enabled builds if GPU is available
+
+### Development Workflow
+1. Build base image once when setting up or updating dependencies
+2. Use `docker-compose build` for fast service updates during development
+3. Only rebuild base image when requirements change
+
 ## Service Details
 
 ### API Service (Port 8000)

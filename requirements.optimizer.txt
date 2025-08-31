@@ -1,0 +1,2 @@
+# Additional requirements for hyperparameter optimization
+optuna==3.5.0  # Modern Bayesian optimization library

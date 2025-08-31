@@ -5,6 +5,8 @@ import json
 import os
 from typing import List, Optional
 from pydantic import BaseModel
+import pickle
+from fuzzywuzzy import fuzz, process
 
 app = FastAPI(
     title="Bayesian Book Recommendations",
@@ -37,6 +39,22 @@ class RecommendationResponse(BaseModel):
     recommendations: List[Recommendation]
     total_available: int
     note: Optional[str] = None
+
+class UserRating(BaseModel):
+    title: str
+    rating: float
+
+class ColdStartRequest(BaseModel):
+    ratings: List[UserRating]
+    top_k: Optional[int] = 10
+
+class BookSearchResponse(BaseModel):
+    title: str
+    similarity: float
+
+class BookSearchRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
 
 @app.get("/")
 async def root():
@@ -95,7 +113,7 @@ async def get_recommendations(user_id: int, top_k: int = 10):
 
 @app.get("/users")
 async def get_available_users():
-    """Get list of users with precomputed recommendations"""
+    """Get list of users with precomputed recommendations (includes both trained and cold start users)"""
     try:
         # Get all recommendation keys from Redis
         keys = redis_client.keys("recs:*")
@@ -104,7 +122,8 @@ async def get_available_users():
         
         return {
             "total_users": len(user_ids),
-            "user_ids": user_ids[:100]  # Return first 100 for API responsiveness
+            "user_ids": user_ids[:100],  # Return first 100 for API responsiveness
+            "note": "Includes both trained users and cold start users"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -140,3 +159,115 @@ async def get_model_info():
         raise HTTPException(status_code=500, detail="Invalid model metadata")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+def _load_recommender():
+    """Load the trained recommender model from Redis"""
+    try:
+        # Check if model data exists
+        model_data = redis_client.get('model:recommender')
+        if not model_data:
+            return None
+        
+        # Deserialize the recommender
+        recommender = pickle.loads(model_data.encode('latin1'))
+        return recommender
+    except Exception as e:
+        print(f"Error loading recommender: {e}")
+        return None
+
+def _get_book_titles():
+    """Get list of all book titles from Redis"""
+    try:
+        book_titles_data = redis_client.get('model:book_titles')
+        if not book_titles_data:
+            return []
+        return json.loads(book_titles_data)
+    except Exception:
+        return []
+
+@app.post("/recommend/cold-start")
+async def cold_start_recommendations(request: ColdStartRequest):
+    """Get recommendations for new user based on their ratings"""
+    
+    # Load the recommender
+    recommender = _load_recommender()
+    if not recommender:
+        raise HTTPException(
+            status_code=503,
+            detail="Model not available. Please run batch processing first."
+        )
+    
+    try:
+        # Convert request to format expected by recommender
+        user_ratings = [{"title": r.title, "rating": r.rating} for r in request.ratings]
+        
+        # Get recommendations
+        result = recommender.cold_start_recommendations(user_ratings, request.top_k)
+        
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return {
+            "user_type": "cold_start",
+            "recommendations": result["recommendations"],
+            "total_available": len(result["recommendations"]),
+            "valid_books_rated": result.get("valid_books_rated", 0),
+            "note": f"Based on {result.get('valid_books_rated', 0)} books found in our dataset"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generating recommendations: {str(e)}")
+
+@app.post("/books/search")
+async def search_books(request: BookSearchRequest):
+    """Search for books using fuzzy matching"""
+    
+    book_titles = _get_book_titles()
+    if not book_titles:
+        raise HTTPException(
+            status_code=503,
+            detail="Book data not available. Please run batch processing first."
+        )
+    
+    try:
+        # Use fuzzywuzzy to find similar book titles
+        matches = process.extract(request.query, book_titles, limit=request.limit)
+        
+        # Convert to response format
+        results = [
+            BookSearchResponse(title=match[0], similarity=match[1]/100.0)
+            for match in matches
+        ]
+        
+        return {
+            "query": request.query,
+            "results": results,
+            "total_books": len(book_titles)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error searching books: {str(e)}")
+
+@app.get("/books")
+async def get_all_books(limit: Optional[int] = 100, offset: Optional[int] = 0):
+    """Get paginated list of all available books"""
+    
+    book_titles = _get_book_titles()
+    if not book_titles:
+        raise HTTPException(
+            status_code=503,
+            detail="Book data not available. Please run batch processing first."
+        )
+    
+    # Paginate results
+    start_idx = offset
+    end_idx = offset + limit
+    paginated_books = book_titles[start_idx:end_idx]
+    
+    return {
+        "books": paginated_books,
+        "total_books": len(book_titles),
+        "offset": offset,
+        "limit": limit,
+        "has_more": end_idx < len(book_titles)
+    }

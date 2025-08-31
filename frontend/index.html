@@ -13,20 +13,56 @@
             <p class="subtitle">Uncertainty-aware recommendations with confidence intervals</p>
         </header>
 
-        <div class="controls">
-            <div class="input-group">
-                <label for="userId">User ID:</label>
-                <input type="number" id="userId" placeholder="Enter user ID (e.g., 8)" min="1">
-                <button id="randomUser">Random User</button>
+        <!-- Tab Navigation -->
+        <div class="tab-nav">
+            <button id="datasetUsersTab" class="tab-btn active">Dataset Users</button>
+            <button id="newUsersTab" class="tab-btn">New Users</button>
+        </div>
+
+        <!-- Dataset Users Tab -->
+        <div id="datasetUsersContent" class="tab-content">
+            <div class="tab-description">
+                <p>Get recommendations for any user from the original dataset (includes both trained users and cold start users)</p>
             </div>
-            
-            <div class="input-group">
-                <label for="topK">Number of recommendations:</label>
-                <input type="range" id="topK" min="1" max="20" value="10">
-                <span id="topKValue">10</span>
+            <div class="controls">
+                <div class="input-group">
+                    <label for="userId">User ID:</label>
+                    <input type="number" id="userId" placeholder="Enter any user ID from dataset" min="1">
+                    <button id="randomUser">Random User</button>
+                </div>
+                
+                <div class="input-group">
+                    <label for="topK">Number of recommendations:</label>
+                    <input type="range" id="topK" min="1" max="20" value="10">
+                    <span id="topKValue">10</span>
+                </div>
+                
+                <button id="getRecommendations" class="primary-btn">Get Recommendations</button>
             </div>
-            
-            <button id="getRecommendations" class="primary-btn">Get Recommendations</button>
+        </div>
+
+        <!-- New Users Tab -->
+        <div id="newUsersContent" class="tab-content hidden">
+            <div class="tab-description">
+                <p>Don't have a user ID? Search for books you've read and get personalized recommendations</p>
+            </div>
+            <div class="search-section">
+                <div class="search-container">
+                    <input type="text" id="bookSearch" placeholder="Start typing a book title..." autocomplete="off">
+                    <div id="searchSuggestions" class="search-suggestions hidden"></div>
+                </div>
+                
+                <div id="userRatings" class="user-ratings"></div>
+                
+                <div class="fuzzy-controls" id="fuzzyControls" style="display: none;">
+                    <div class="input-group">
+                        <label for="fuzzyTopK">Number of recommendations:</label>
+                        <input type="range" id="fuzzyTopK" min="1" max="20" value="10">
+                        <span id="fuzzyTopKValue">10</span>
+                    </div>
+                    <button id="getFuzzyRecs" class="primary-btn" disabled>Get My Recommendations</button>
+                </div>
+            </div>
         </div>
 
         <div id="systemInfo" class="system-info"></div>
@@ -45,6 +81,6 @@
         </div>
     </footer>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=2"></script>
 </body>
 </html>

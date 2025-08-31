@@ -110,12 +110,21 @@ class BatchProcessor:
         print(f"Test RMSE (1-10 scale): {evaluation_metrics['rmse_original_scale']}")
         print(f"Test MAE (1-10 scale): {evaluation_metrics['mae_original_scale']}")
         
-        # Step 7: Generate all recommendations
-        print("\n7. GENERATING RECOMMENDATIONS FOR ALL USERS...")
-        all_recommendations = self.recommender.generate_all_recommendations(
+        # Step 7: Generate all recommendations (trained users)
+        print("\n7. GENERATING RECOMMENDATIONS FOR TRAINED USERS...")
+        trained_recommendations = self.recommender.generate_all_recommendations(
             matrices['mask_tensor'],
             top_k=top_k_recs
         )
+        
+        # Step 7b: Generate cold start recommendations for filtered users
+        print("\n7b. GENERATING COLD START RECOMMENDATIONS FOR FILTERED USERS...")
+        cold_start_recommendations = self._generate_cold_start_recommendations(
+            filtered_data, top_k_recs
+        )
+        
+        # Combine both recommendation sets
+        all_recommendations = {**trained_recommendations, **cold_start_recommendations}
         
         # Step 8: Store in Redis/Dragonfly
         print("\n8. STORING RECOMMENDATIONS IN DRAGONFLY...")
@@ -123,10 +132,14 @@ class BatchProcessor:
             all_recommendations, matrices
         )
         
-        # Step 9: Store model metadata
-        print("\n9. STORING MODEL METADATA...")
+        # Step 9: Store model metadata and components
+        print("\n9. STORING MODEL METADATA AND COMPONENTS...")
         self._store_model_metadata(training_results, evaluation_metrics, matrices, 
                                  k, n_samples, burn_in)
+        
+        # Step 10: Store recommender model and book titles for cold start
+        print("\n10. STORING MODEL COMPONENTS FOR COLD START...")
+        self._store_model_components(matrices)
         
         # Return comprehensive results
         pipeline_results = {
@@ -168,16 +181,24 @@ class BatchProcessor:
         # Create pipeline for efficient Redis operations
         pipe = self.redis_client.pipeline()
         
-        for internal_idx, rec_data in all_recommendations.items():
-            # Convert internal index to external user ID
-            external_user_id = self.data_processor.get_external_user_id(internal_idx)
-            
-            if external_user_id != -1:
-                # Store recommendations for this user
-                key = f"recs:{external_user_id}"
+        for key, rec_data in all_recommendations.items():
+            if isinstance(key, str) and key.startswith('cold_start_'):
+                # Cold start user - extract user ID from key
+                user_id = key.replace('cold_start_', '')
+                redis_key = f"recs:{user_id}"
                 value = json.dumps(rec_data['recommendations'])
-                pipe.set(key, value)
+                pipe.set(redis_key, value)
                 stored_count += 1
+            elif isinstance(key, int):
+                # Trained user - convert internal index to external user ID
+                external_user_id = self.data_processor.get_external_user_id(key)
+                
+                if external_user_id != -1:
+                    # Store recommendations for this user
+                    redis_key = f"recs:{external_user_id}"
+                    value = json.dumps(rec_data['recommendations'])
+                    pipe.set(redis_key, value)
+                    stored_count += 1
         
         # Execute all Redis operations
         pipe.execute()
@@ -223,6 +244,99 @@ class BatchProcessor:
         self.redis_client.set('model:user_count', matrices['n_users'])
         self.redis_client.set('model:book_count', matrices['n_items'])
     
+    def _store_model_components(self, matrices: Dict):
+        """Store model components for cold start and search functionality"""
+        try:
+            # Store the trained recommender model
+            recommender_pickle = pickle.dumps(self.recommender).decode('latin1')
+            self.redis_client.set('model:recommender', recommender_pickle)
+            
+            # Store book titles for search functionality
+            book_titles_json = json.dumps(matrices['book_titles'])
+            self.redis_client.set('model:book_titles', book_titles_json)
+            
+            print(f"✓ Stored recommender model and {len(matrices['book_titles'])} book titles")
+            
+        except Exception as e:
+            print(f"⚠️  Failed to store model components: {e}")
+            # Don't fail the entire pipeline for this
+    
+    def _generate_cold_start_recommendations(self, filtered_data, top_k_recs: int) -> Dict:
+        """Generate cold start recommendations for users filtered out during preprocessing"""
+        cold_start_recs = {}
+        
+        try:
+            # Load original data and apply same preprocessing as training data
+            users, ratings, books = self.data_processor.load_data()
+            
+            # Clean and merge original data (same as preprocessing)
+            ratings_clean = ratings[['User-ID', 'ISBN', 'Book-Rating']]
+            books_clean = books[['ISBN', 'Book-Title', 'Book-Author', 'Year-Of-Publication']]
+            original_ratings = ratings_clean.merge(books_clean, on='ISBN', how='inner')
+            
+            # Filter to explicit ratings only (same as preprocessing)
+            explicit_only = original_ratings[original_ratings['Book-Rating'] > 0]
+            
+            # Get the same book filtering as used in training
+            # Only include books that are in our final trained model
+            trained_books = set(filtered_data['Book-Title'].unique())
+            explicit_only = explicit_only[explicit_only['Book-Title'].isin(trained_books)]
+            
+            print(f"After filtering to trained books: {len(explicit_only)} ratings")
+            print(f"Unique users in filtered data: {explicit_only['User-ID'].nunique()}")
+            
+            # Get users that have ratings for trained books but were filtered out
+            users_with_trained_book_ratings = set(explicit_only['User-ID'].unique())
+            trained_users = set(filtered_data['User-ID'].unique())
+            filtered_out_users = users_with_trained_book_ratings - trained_users
+            
+            print(f"Total users who rated trained books: {len(users_with_trained_book_ratings)}")
+            print(f"Trained users: {len(trained_users)}")
+            print(f"Cold start users to process: {len(filtered_out_users)}")
+            print(f"Expected total coverage: {len(users_with_trained_book_ratings)} users")
+            
+            processed_count = 0
+            for user_id in filtered_out_users:
+                if processed_count % 100 == 0 and processed_count > 0:
+                    print(f"Processed {processed_count}/{len(filtered_out_users)} cold start users")
+                
+                try:
+                    # Get user's ratings for books in our trained model
+                    user_ratings = explicit_only[explicit_only['User-ID'] == user_id]
+                    
+                    # Convert to format expected by cold start method
+                    user_ratings_list = []
+                    for _, rating_row in user_ratings.iterrows():
+                        book_title = rating_row['Book-Title']
+                        if book_title in self.recommender.book_title_to_idx:
+                            user_ratings_list.append({
+                                'title': book_title,
+                                'rating': float(rating_row['Book-Rating'])
+                            })
+                    
+                    # Only process if user has ratings for books in our model
+                    if len(user_ratings_list) > 0:
+                        result = self.recommender.cold_start_recommendations(
+                            user_ratings_list, top_k_recs
+                        )
+                        
+                        if 'error' not in result:
+                            # Store using internal index (negative to distinguish from trained users)
+                            # We'll use the external user ID directly in storage
+                            cold_start_recs[f"cold_start_{user_id}"] = result
+                            processed_count += 1
+                
+                except Exception as e:
+                    print(f"Error processing cold start user {user_id}: {e}")
+                    continue
+            
+            print(f"Generated cold start recommendations for {processed_count} users")
+            return cold_start_recs
+            
+        except Exception as e:
+            print(f"⚠️  Failed to generate cold start recommendations: {e}")
+            return {}
+    
     def health_check(self) -> Dict:
         """Check system health"""
         try:
@@ -259,45 +373,74 @@ def main():
     
     processor = BatchProcessor()
     
-    # Environment-based configuration
+    # Load hyperparameters from environment variables with fallbacks
+    def get_env_float(key, default):
+        try:
+            return float(os.getenv(key, default))
+        except (ValueError, TypeError):
+            return default
+            
+    def get_env_int(key, default):
+        try:
+            return int(os.getenv(key, default))
+        except (ValueError, TypeError):
+            return default
+            
+    def get_env_bool(key, default):
+        val = os.getenv(key, str(default)).lower()
+        return val in ('true', '1', 'yes', 'on')
+    
+    # Environment-based configuration with .env override
     env = os.getenv('ENVIRONMENT', 'development')
     
     if env == 'production':
         # Production settings - high quality
-        config = {
-            'min_book_ratings': 50,
-            'min_user_ratings': 20,
-            'k': 30,
-            'n_samples': 1500,  # More samples for production
-            'burn_in': 200,     # Longer burn-in
-            'alpha': 1.0,
-            'top_k_recs': 20,   # More recommendations stored
+        base_config = {
+            'min_book_ratings': 20,
+            'min_user_ratings': 10,
+            'k': 5,
+            'n_samples': 1500,
+            'burn_in': 200,
+            'alpha': 3.0,
+            'top_k_recs': 20,
             'use_adaptive': True
         }
     elif env == 'staging':
         # Staging - medium quality, faster
-        config = {
-            'min_book_ratings': 50,
-            'min_user_ratings': 20,
-            'k': 30,
-            'n_samples': 500,
-            'burn_in': 100,
-            'alpha': 1.0,
+        base_config = {
+            'min_book_ratings': 20,
+            'min_user_ratings': 10,
+            'k': 5,
+            'n_samples': 550,
+            'burn_in': 200,
+            'alpha': 6.57,
             'top_k_recs': 15,
             'use_adaptive': True
         }
     else:
         # Development - fast iteration
-        config = {
-            'min_book_ratings': 50,
-            'min_user_ratings': 20,
-            'k': 30,
-            'n_samples': 50,   # Minimum for decent quality
-            'burn_in': 5,      # Reduced with MAP init
-            'alpha': 1.0,
+        base_config = {
+            'min_book_ratings': 20,
+            'min_user_ratings': 10,
+            'k': 5,
+            'n_samples': 50,
+            'burn_in': 5,
+            'alpha': 3.0,
             'top_k_recs': 10,
             'use_adaptive': True
         }
+    
+    # Override with environment variables if provided
+    config = {
+        'min_book_ratings': get_env_int('MCMC_MIN_BOOK_RATINGS', base_config['min_book_ratings']),
+        'min_user_ratings': get_env_int('MCMC_MIN_USER_RATINGS', base_config['min_user_ratings']),
+        'k': get_env_int('MCMC_K', base_config['k']),
+        'n_samples': get_env_int('MCMC_N_SAMPLES', base_config['n_samples']),
+        'burn_in': get_env_int('MCMC_BURN_IN', base_config['burn_in']),
+        'alpha': get_env_float('MCMC_ALPHA', base_config['alpha']),
+        'top_k_recs': get_env_int('MCMC_TOP_K_RECS', base_config['top_k_recs']),
+        'use_adaptive': get_env_bool('MCMC_USE_ADAPTIVE', base_config['use_adaptive'])
+    }
     
     print(f"Running in {env} mode with config:")
     for key, value in config.items():

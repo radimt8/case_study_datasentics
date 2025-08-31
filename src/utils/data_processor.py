@@ -23,7 +23,7 @@ class BookDataProcessor:
         
         return users, ratings, books
     
-    def preprocess_data(self, min_book_ratings: int = 50, min_user_ratings: int = 20) -> pd.DataFrame:
+    def preprocess_data(self, min_book_ratings: int = 20, min_user_ratings: int = 10) -> pd.DataFrame:
         """Preprocess and filter the data"""
         users, ratings, books = self.load_data()
         

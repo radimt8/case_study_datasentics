@@ -213,7 +213,9 @@ class BayesianPMF_MCMC:
             if len(observed_items) == 0:
                 # Sample from prior
                 cov = torch.inverse(self.Lambda_U + torch.eye(self.k) * 1e-6)
-                self.U[i] = dist.MultivariateNormal(self.mu_U, cov).sample()
+                # Add regularization to ensure positive definiteness
+                cov_reg = cov + torch.eye(self.k, device=cov.device) * 1e-8
+                self.U[i] = dist.MultivariateNormal(self.mu_U, cov_reg).sample()
             else:
                 # Compute posterior parameters (Eq. 12-13)
                 V_obs = self.V[observed_items]  # (n_obs, k)
@@ -229,7 +231,9 @@ class BayesianPMF_MCMC:
                 # Sample from posterior
                 try:
                     cov_i = torch.inverse(Lambda_i + torch.eye(self.k) * 1e-6)
-                    self.U[i] = dist.MultivariateNormal(mu_i, cov_i).sample()
+                    # Add regularization to ensure positive definiteness
+                    cov_i_reg = cov_i + torch.eye(self.k, device=cov_i.device) * 1e-6
+                    self.U[i] = dist.MultivariateNormal(mu_i, cov_i_reg).sample()
                 except:
                     # Fallback for numerical stability
                     self.U[i] = mu_i + torch.randn(self.k) * 0.01
@@ -247,7 +251,9 @@ class BayesianPMF_MCMC:
             
             if len(observed_users) == 0:
                 cov = torch.inverse(self.Lambda_V + torch.eye(self.k) * 1e-6)
-                self.V[j] = dist.MultivariateNormal(self.mu_V, cov).sample()
+                # Add regularization to ensure positive definiteness
+                cov_reg = cov + torch.eye(self.k, device=cov.device) * 1e-8
+                self.V[j] = dist.MultivariateNormal(self.mu_V, cov_reg).sample()
             else:
                 U_obs = self.U[observed_users]
                 r_obs = R[observed_users, j]
@@ -258,7 +264,9 @@ class BayesianPMF_MCMC:
                 
                 try:
                     cov_j = torch.inverse(Lambda_j + torch.eye(self.k) * 1e-6)
-                    self.V[j] = dist.MultivariateNormal(mu_j, cov_j).sample()
+                    # Add regularization to ensure positive definiteness
+                    cov_j_reg = cov_j + torch.eye(self.k, device=cov_j.device) * 1e-6
+                    self.V[j] = dist.MultivariateNormal(mu_j, cov_j_reg).sample()
                 except:
                     self.V[j] = mu_j + torch.randn(self.k) * 0.01
     
@@ -301,7 +309,9 @@ class BayesianPMF_MCMC:
         # Sample mu_U from Normal
         try:
             cov_mu = torch.inverse(beta_star * self.Lambda_U + torch.eye(self.k) * 1e-6)
-            self.mu_U = dist.MultivariateNormal(mu_star, cov_mu).sample()
+            # Add regularization to ensure positive definiteness
+            cov_mu_reg = cov_mu + torch.eye(self.k, device=cov_mu.device) * 1e-6
+            self.mu_U = dist.MultivariateNormal(mu_star, cov_mu_reg).sample()
         except:
             self.mu_U = mu_star
     
@@ -337,7 +347,9 @@ class BayesianPMF_MCMC:
         
         try:
             cov_mu = torch.inverse(beta_star * self.Lambda_V + torch.eye(self.k) * 1e-6)
-            self.mu_V = dist.MultivariateNormal(mu_star, cov_mu).sample()
+            # Add regularization to ensure positive definiteness
+            cov_mu_reg = cov_mu + torch.eye(self.k, device=cov_mu.device) * 1e-6
+            self.mu_V = dist.MultivariateNormal(mu_star, cov_mu_reg).sample()
         except:
             self.mu_V = mu_star
     

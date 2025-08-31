@@ -1,0 +1,15 @@
+FROM bayesian-mcmc:base
+
+# Install optimizer-specific dependencies
+COPY requirements.optimizer.txt .
+RUN pip install --no-cache-dir -r requirements.optimizer.txt
+
+# Copy optimizer files
+COPY src/ ./src/
+COPY optimize_hyperparameters.py ./
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Default command
+CMD ["python", "optimize_hyperparameters.py"]

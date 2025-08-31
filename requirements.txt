@@ -11,6 +11,8 @@ fastapi==0.104.1
 uvicorn==0.24.0
 redis==5.0.1
 pydantic==2.5.0
+fuzzywuzzy==0.18.0
+python-levenshtein==0.20.9
 
 # Development dependencies (comment out for production)
 # matplotlib==3.8.2  # For plotting in notebooks

@@ -1,0 +1,30 @@
+FROM python:3.9-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install all heavy dependencies once
+RUN pip install --no-cache-dir \
+    torch==2.0.0 \
+    torchvision \
+    numpy \
+    pandas \
+    scikit-learn \
+    scipy \
+    redis \
+    fastapi \
+    uvicorn \
+    pydantic \
+    tqdm \
+    fuzzywuzzy \
+    python-levenshtein
+
+# Set working directory
+WORKDIR /app
+
+# Create non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
