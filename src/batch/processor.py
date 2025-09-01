@@ -396,20 +396,20 @@ def main():
     if env == 'production':
         # Production settings - high quality
         base_config = {
-            'min_book_ratings': 20,
-            'min_user_ratings': 10,
+            'min_book_ratings': 10,
+            'min_user_ratings': 5,
             'k': 5,
             'n_samples': 1500,
             'burn_in': 200,
-            'alpha': 3.0,
+            'alpha': 6.57,
             'top_k_recs': 20,
             'use_adaptive': True
         }
     elif env == 'staging':
         # Staging - medium quality, faster
         base_config = {
-            'min_book_ratings': 20,
-            'min_user_ratings': 10,
+            'min_book_ratings': 10,
+            'min_user_ratings': 5,
             'k': 5,
             'n_samples': 550,
             'burn_in': 200,
@@ -420,12 +420,12 @@ def main():
     else:
         # Development - fast iteration
         base_config = {
-            'min_book_ratings': 20,
-            'min_user_ratings': 10,
+            'min_book_ratings': 10,
+            'min_user_ratings': 5,
             'k': 5,
             'n_samples': 50,
             'burn_in': 5,
-            'alpha': 3.0,
+            'alpha': 6.57,
             'top_k_recs': 10,
             'use_adaptive': True
         }

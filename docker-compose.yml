@@ -47,8 +47,13 @@ services:
     environment:
       - REDIS_URL=redis://dragonfly:6379
       - ENVIRONMENT=${ENVIRONMENT:-development}
+    # Use manual device mapping instead
+    devices:
+      - "/dev/nvidia0:/dev/nvidia0"
+      - "/dev/nvidiactl:/dev/nvidiactl" 
+      - "/dev/nvidia-uvm:/dev/nvidia-uvm"
     profiles:
-      - batch  # Only run when explicitly requested
+      - batch
 
   optimizer:
     build:

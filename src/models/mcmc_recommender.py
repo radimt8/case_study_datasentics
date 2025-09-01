@@ -372,11 +372,11 @@ class MCMCRecommender:
         user_factors = torch.stack(user_factors_list)
         
         # DEBUG: Check user factor variation across samples
-        print(f"DEBUG User Factors - shape: {user_factors.shape}")
-        print(f"DEBUG User Factors - mean across samples: {user_factors.mean(dim=0).tolist()}")
-        print(f"DEBUG User Factors - std across samples: {user_factors.std(dim=0).tolist()}")
-        print(f"DEBUG User Factors - norm per sample: {user_factors.norm(dim=1)[:5].tolist()}")
-        print(f"DEBUG User Factors - sample 0 vs 1 diff: {(user_factors[0] - user_factors[1]).norm().item():.6f}")
+        # print(f"DEBUG User Factors - shape: {user_factors.shape}")
+        # print(f"DEBUG User Factors - mean across samples: {user_factors.mean(dim=0).tolist()}")
+        # print(f"DEBUG User Factors - std across samples: {user_factors.std(dim=0).tolist()}")
+        # print(f"DEBUG User Factors - norm per sample: {user_factors.norm(dim=1)[:5].tolist()}")
+        # print(f"DEBUG User Factors - sample 0 vs 1 diff: {(user_factors[0] - user_factors[1]).norm().item():.6f}")
         
         # DEBUG: Compare with a trained user
         U_trained = torch.stack(self.samples['U'])  # (n_samples, n_users, k)
@@ -387,18 +387,18 @@ class MCMCRecommender:
         V_scale = V_samples.norm(dim=2).mean().item()  # Mean norm across all items and samples
         scale_ratio = U_scale / V_scale
         
-        print(f"DEBUG Scales - U mean norm: {U_scale:.6f}, V mean norm: {V_scale:.6f}")
-        print(f"DEBUG Scale ratio (U/V): {scale_ratio:.2f}")
-        print(f"DEBUG Cold-start norm before scaling: {user_factors.norm(dim=1).mean().item():.6f}")
+        # print(f"DEBUG Scales - U mean norm: {U_scale:.6f}, V mean norm: {V_scale:.6f}")
+        # print(f"DEBUG Scale ratio (U/V): {scale_ratio:.2f}")
+        # print(f"DEBUG Cold-start norm before scaling: {user_factors.norm(dim=1).mean().item():.6f}")
         
         # Apply scale correction
         user_factors = user_factors * scale_ratio
         
-        print(f"DEBUG Cold-start norm after scaling: {user_factors.norm(dim=1).mean().item():.6f}")
+        # print(f"DEBUG Cold-start norm after scaling: {user_factors.norm(dim=1).mean().item():.6f}")
         
         trained_user_0 = U_trained[:, 0]  # (n_samples, k) - first trained user
-        print(f"DEBUG Trained User 0 - norm per sample: {trained_user_0.norm(dim=1)[:5].tolist()}")
-        print(f"DEBUG Corrected ratio: {trained_user_0.norm(dim=1).mean().item() / user_factors.norm(dim=1).mean().item():.2f}")
+        # print(f"DEBUG Trained User 0 - norm per sample: {trained_user_0.norm(dim=1)[:5].tolist()}")
+        # print(f"DEBUG Corrected ratio: {trained_user_0.norm(dim=1).mean().item() / user_factors.norm(dim=1).mean().item():.2f}")
         
         # Get all unrated items (exclude rated books)
         rated_book_indices = [book_info['idx'] for book_info in valid_book_info]
@@ -413,21 +413,21 @@ class MCMCRecommender:
             V_mean = V_samples.mean(dim=0)  # (n_items, k)
             user_vector_mean = user_factors.mean(dim=0)  # (k,)
             
-            print(f"\nDEBUG BOOK ANALYSIS:")
-            print(f"Input books and their factors:")
-            for book_info in valid_book_info:
-                book_factors = V_mean[book_info['idx']]
-                similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
-                print(f"  {book_info['title']} (rating {book_info['rating']}): "
-                      f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
-            
-            print(f"\nRecommended books and their similarity to user vector:")
-            for i, rec in enumerate(result['recommendations'][:3]):  # Show top 3
-                book_idx = self.book_title_to_idx[rec['title']]
-                book_factors = V_mean[book_idx]
-                similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
-                print(f"  #{i+1}: {rec['title']} (pred {rec['predicted_rating']}): "
-                      f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
+            # print(f"\nDEBUG BOOK ANALYSIS:")
+            # print(f"Input books and their factors:")
+            # for book_info in valid_book_info:
+            #     book_factors = V_mean[book_info['idx']]
+            #     similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
+            #     print(f"  {book_info['title']} (rating {book_info['rating']}): "
+            #           f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
+            # 
+            # print(f"\nRecommended books and their similarity to user vector:")
+            # for i, rec in enumerate(result['recommendations'][:3]):  # Show top 3
+            #     book_idx = self.book_title_to_idx[rec['title']]
+            #     book_factors = V_mean[book_idx]
+            #     similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
+            #     print(f"  #{i+1}: {rec['title']} (pred {rec['predicted_rating']}): "
+            #           f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
         
         # Add metadata
         if 'error' not in result:

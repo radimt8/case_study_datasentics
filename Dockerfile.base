@@ -1,15 +1,24 @@
-FROM python:3.9-slim
+FROM nvidia/cuda:12.9.1-cudnn-devel-ubuntu22.04
 
-# Install system dependencies
+# Install Python and system dependencies
 RUN apt-get update && apt-get install -y \
+    python3.10 \
+    python3.10-dev \
+    python3-pip \
     gcc \
     g++ \
+    && ln -s /usr/bin/python3.10 /usr/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
-# Install all heavy dependencies once
+# Upgrade pip
+RUN pip install --upgrade pip
+
+# Install PyTorch with CUDA support
 RUN pip install --no-cache-dir \
-    torch==2.0.0 \
-    torchvision \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Install other heavy libraries
+RUN pip install --no-cache-dir \
     numpy \
     pandas \
     scikit-learn \
@@ -22,9 +31,6 @@ RUN pip install --no-cache-dir \
     fuzzywuzzy \
     python-levenshtein
 
-# Set working directory
 WORKDIR /app
-
-# Create non-root user for security
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
