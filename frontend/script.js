@@ -366,7 +366,7 @@ function switchTab(tab) {
 // Load all books for auto-complete
 async function loadAllBooks() {
     try {
-        const response = await fetch(`${API_BASE_URL}/books?limit=1000`);
+        const response = await fetch(`${API_BASE_URL}/books?limit=6000`);
         const data = await response.json();
         allBooks = data.books || [];
         console.log(`Loaded ${allBooks.length} books for search`);

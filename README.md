@@ -2,16 +2,44 @@
 
 ## Executive Summary
 
-This project implements a **Bayesian Matrix Factorization** system for book recommendations using variational inference, developed as a case study demonstrating advanced machine learning techniques with production-ready considerations. The implementation goes beyond standard collaborative filtering by incorporating uncertainty quantification, bias monitoring, and mathematical diagnostic frameworks.
+This project implements a **Bayesian Matrix Factorization system** for book recommendations using **MAP-initialized MCMC with Gibbs sampling**, developed as a case study demonstrating advanced machine learning techniques with microservices architecture. The implementation incorporates uncertainty quantification, convergence monitoring, hyperparameter optimization, and cold-start user support.
 
-**Key Achievement:** Built a mathematically rigorous recommendation system that not only provides predictions but quantifies prediction reliability through Bayesian uncertainty estimation.
+**Key Achievement:** Built a recommendation system with uncertainty quantification, real-time API, web interface, and automated hyperparameter optimization using Optuna - demonstrating the full ML pipeline from research to deployment.
+
+## System Overview
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Optimizer     │    │   Batch Service  │    │   API Service   │
+│   (Optuna)      │───▶│   (MCMC Train)   │    │   (FastAPI)     │
+│                 │    │                  │    │                 │
+│ • Hyperparams   │    │ • Gibbs Sampling │    │ • Recommendations│
+│ • Bayesian Opt  │    │ • Convergence    │◄───┤ • Cold-start    │
+│ • Auto Config   │    │ • Precompute     │    │ • Uncertainty   │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                                  │                       ▲
+                                  ▼                       │
+                           ┌──────────────────┐           │
+                           │   DragonflyDB    │───────────┘
+                           │   (Storage)      │    
+                           │                  │    ┌─────────────────┐
+                           │ • Model State    │───▶│   Frontend      │
+                           │ • Precomputed    │    │   (Web UI)      │
+                           │   Recommendations│    │                 │
+                           └──────────────────┘    │ • User Interface│
+                                                   │ • Book Search   │
+                                                   │ • Interactions  │
+                                                   └─────────────────┘
+```
+
+**For detailed setup and deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md)**
 
 ## Technical Implementation
 
 ### Dataset and Preprocessing
 - **Source:** BookCrossing dataset (278K users, 271K books, 1.15M ratings)
-- **Filtering Strategy:** Active users (≥20 ratings) and popular books (≥50 ratings)
-- **Final Dataset:** 2,978 users × 651 books with 30,479 ratings (98.43% sparse)
+- **Filtering Strategy:** Active users (≥5 ratings) and popular books (≥10 ratings)
+- **Final Dataset:** 11,928 users × 5,710 books with 120,035 ratings (~99.8% sparse)
 - **Split:** 80/20 train/test for generalization assessment
 
 ### Mathematical Framework
@@ -19,222 +47,153 @@ This project implements a **Bayesian Matrix Factorization** system for book reco
 **Bayesian Matrix Factorization Model:**
 ```
 R_ij ~ N(σ(U_i^T V_j), σ_noise²)
-U_i ~ N(0, σ_prior² I)
-V_j ~ N(0, σ_prior² I)
+U_i ~ N(μ_U, Λ_U^-1)
+V_j ~ N(μ_V, Λ_V^-1)
 ```
 
-**Variational Inference:**
-- Mean-field approximation with Gaussian variational posteriors
-- ELBO optimization using coordinate ascent
-- Point estimate approximation for sigmoid expectations
-- Hyperparameters: k=5 latent factors, σ_prior=0.5, σ_noise=0.2
+**MCMC Implementation (Gibbs Sampling):**
+- MAP initialization for better convergence
+- Adaptive sampling with convergence monitoring
+- Hyperparameter sampling using Normal-Wishart priors
+- Geweke diagnostics and parameter stability tracking
+- Early stopping based on test RMSE patience
 
-**Key Innovation - Diagnostic Framework:**
-```python
-# Quantify approximation bias
-bias_stats = quantify_sigmoid_bias(mu_U, log_var_U, mu_V, log_var_V)
-# Monitor assumption violations
-corr_diag = compute_correlation_diagnostics(mu_U, mu_V)
-```
+**Hyperparameter Optimization:**
+- Optuna-based Bayesian optimization
+- Optimizes: latent factors (k), observation precision (α), sample counts, burn-in
+- Multi-objective: user diversity + prediction accuracy
+- Automatically updates environment configuration
 
 ### Performance Metrics
 
-| Metric | Value | Interpretation |
-|--------|--------|----------------|
-| Training RMSE | 1.28/10 | Good fit to training data |
-| Test RMSE | 1.68/10 | Competitive generalization |
-| Generalization Gap | 0.44/10 | Minimal overfitting |
-| Approximation Bias | 1.7% mean, 7% max | Low bias in point estimates |
-| Factor Correlations | 47% max (user), 18% (item) | Acceptable mean-field violations |
+**Current Optimized Configuration:**
+- Latent factors (k): 5
+- Observation precision (α): 6.57
+- MCMC samples: 550
+- Burn-in: 200
+- Adaptive convergence monitoring enabled
 
-## Critical Assessment
+**Note:** Performance metrics will vary based on hyperparameter optimization results. The system uses Optuna to automatically find optimal configurations balancing user diversity and prediction accuracy.
 
-### Strengths
-1. **Mathematical Rigor:** Proper uncertainty quantification through Bayesian inference
-2. **Diagnostic Framework:** Real-time monitoring of model assumptions and approximation quality
-3. **Production Readiness:** Uncertainty-aware recommendations with confidence intervals
-4. **Evaluation Methodology:** Proper train/test split revealing true generalization performance
+## System Architecture
 
-### Limitations and Weaknesses
-
-#### 1. **Fundamental Data Sparsity Challenge**
-- **Issue:** 98.43% sparsity fundamentally limits collaborative filtering effectiveness
-- **Impact:** Even sophisticated inference cannot overcome insufficient data density
-- **Evidence:** Test RMSE plateau despite mathematical sophistication
-
-#### 2. **Cold Start Problem**
-- **Issue:** Cannot provide recommendations for new users/items without ratings
-- **Business Impact:** Limits applicability for customer acquisition scenarios
-- **Current Mitigation:** None implemented
-
-#### 3. **Scalability Concerns**
-- **Issue:** Monte Carlo uncertainty estimation requires 500+ samples per prediction
-- **Impact:** ~0.5s latency per user for uncertainty quantification
-- **Trade-off:** Accuracy vs. real-time performance
-
-#### 4. **Mean-Field Approximation Violations**
-- **Issue:** 47% maximum correlation between user factors violates independence assumption
-- **Impact:** Potentially underestimated uncertainty in recommendations
-- **Monitoring:** Diagnostic framework tracks but doesn't correct for violations
-
-#### 5. **Limited Feature Integration**
-- **Issue:** Only uses rating data, ignoring rich metadata (genres, user demographics)
-- **Missed Opportunity:** Content-based features could address sparsity and cold-start
-
-## Major Limitation: Cold-Start User Coverage Gap
-
-### The Fundamental Problem
-**Current System Coverage:** Only 4% of total user base (~3K out of 278K users)
-
-Our filtering approach creates a critical production limitation:
-- **Training Filter:** Users with <20 ratings excluded from model training
-- **Consequence:** No learned user factors (U_i) exist for 96% of users
-- **Business Impact:** Cannot serve recommendations to vast majority of potential customers
-
-### Mathematical Root Cause
-```python
-# Bayesian Matrix Factorization requires learned user factors
-prediction = sigmoid(U_user @ V_item.T)
-# Problem: U_user doesn't exist for non-training users!
-```
-
-**User 546 Example:**
-- Had 15 ratings in original dataset
-- Filtered out during preprocessing (< 20 rating threshold)
-- Result: No user factors learned → Cannot generate recommendations
-
-### Technical Solutions (Not Implemented)
-
-#### 1. **Weighted Factor Imputation** (Quick Fix)
-For cold-start users with some ratings, compute user profile as weighted average of rated item factors:
-```python
-# User rated books [i,j,k] with ratings [r_i, r_j, r_k]
-user_profile = (V_i * r_i + V_j * r_j + V_k * r_k) / (r_i + r_j + r_k)
-predictions = sigmoid(user_profile @ V_all.T)
-```
-
-**Advantages:** Mathematically sound, uses existing learned item factors  
-**Limitations:** Requires at least 1 rating, higher uncertainty
-
-#### 2. **Hybrid Content-Based System** (Robust Solution)
-```python
-# Multi-modal prediction combining:
-final_prediction = α * collaborative_filtering(U,V) +  
-                   β * content_similarity(user_profile, book_features) +
-                   γ * popularity_baseline(book_id)
-```
-
-**Features to leverage:**
-- **Book metadata:** Genre, author, publication year, series information
-- **User demographics:** Age, location (available in Users.csv)
-- **Implicit feedback:** Books viewed but not rated, time spent reading
-
-#### 3. **Progressive User Onboarding** (UX Solution)
-- **New users:** Start with popularity-based recommendations by genre
-- **After 3-5 ratings:** Switch to weighted factor imputation
-- **After 10+ ratings:** Full collaborative filtering with uncertainty quantification
-
-### Production Implementation Roadmap
-
-**Phase 1 (1-2 weeks): Expand Coverage**
-- Implement weighted factor imputation for users with 1-19 ratings
-- Add popularity-based fallback for ice-cold users
-- Expand coverage from 4% to ~40% of user base
-
-**Phase 2 (3-4 weeks): Hybrid Architecture**
-- Extract and vectorize book content features (TF-IDF on titles/descriptions)
-- Implement content-based similarity scoring
-- Ensemble model with learned CF + content + popularity weights
-
-**Phase 3 (2-3 months): Advanced Cold-Start**
-- Active learning: Smart questions for new users ("Rate these popular books")
-- Transfer learning: Pre-trained book embeddings from external data
-- Real-time adaptation: Update user profile after each new rating
-
-### Business Justification
-- **Current system:** Serves 4% of potential users (power users only)
-- **Enhanced system:** Serves 100% of users with degraded but acceptable quality
-- **Revenue impact:** Enable customer acquisition, not just retention
-- **Competitive advantage:** Most recommendation systems struggle with cold-start
-
-### Why This Wasn't Implemented
-**Case Study Scope:** This project demonstrates advanced mathematical modeling and production architecture awareness, not comprehensive feature engineering.
-
-**Real-world priority:** For consulting presentation, showing awareness of limitations and clear solution paths is more valuable than implementing every production feature.
-
-## Production Readiness Assessment
-
-### ✅ Ready for Production
-- **Model Serialization:** Torch tensors easily serializable
-- **API Framework:** Clear prediction interface with uncertainty bounds
-- **Monitoring Infrastructure:** Bias and correlation diagnostics for model health
-- **Evaluation Pipeline:** Automated train/test validation
-
-### ⚠️ Requires Development
-- **Scalability:** Need approximate uncertainty methods for real-time serving
-- **Cold Start:** Hybrid approach combining content-based and collaborative filtering
-- **A/B Testing Framework:** Infrastructure for online model evaluation
-- **Data Pipeline:** Automated retraining and model updating
-
-### ❌ Production Blockers
-- **Latency:** Current uncertainty estimation too slow for real-time recommendations
-- **Coverage:** Cannot serve recommendations for 20% of potential users (cold start)
-
-## Next Steps for Production Deployment
-
-### Phase 1: Immediate (2-4 weeks)
-1. **Fast Uncertainty Approximation**
-   - Implement Gaussian approximation to sigmoid for sub-millisecond uncertainty
-   - Trade accuracy for 100x speed improvement
-   
-2. **API Development**
-   ```python
-   @app.post("/recommend")
-   async def recommend(user_id: int, top_k: int = 10):
-       return {
-           "recommendations": [...],
-           "confidence_intervals": [...],
-           "model_diagnostics": {...}
-       }
-   ```
-
-3. **Basic Hybrid System**
-   - Content-based fallback for cold-start users
-   - Popularity-based recommendations for new items
-
-### Phase 2: Enhanced Production (1-2 months)
-1. **Advanced Hybrid Architecture**
-   - Neural collaborative filtering with content features
-   - Ensemble weighting based on data availability
-   
-2. **Real-time Model Updates**
-   - Online learning for user preference drift
-   - Incremental factor updates for new ratings
-
-3. **Business Intelligence Integration**
-   - Recommendation explanation system
-   - Revenue impact attribution per recommendation
-
-### Phase 3: Advanced Features (3-6 months)
-1. **Multi-objective Optimization**
-   - Balance accuracy, diversity, and novelty
-   - Business metrics (conversion rate, engagement time)
-
-2. **Causal Inference Framework**
-   - Treatment effect estimation for recommendation interventions
-   - Debiasing techniques for selection bias in ratings
-
-## Technical Architecture for Deployment
+### Microservices Components
 
 ```
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Data Pipeline │    │   Model Service  │    │   Monitoring    │
+│   Batch Service │    │   API Service    │    │   Frontend      │
+│   (Training)    │───▶│   (FastAPI)      │───▶│   (Web UI)      │
 │                 │    │                  │    │                 │
-│ • ETL Process   │───▶│ • FastAPI Server │───▶│ • Bias Tracking │
-│ • Feature Eng   │    │ • Model Serving  │    │ • A/B Testing   │
-│ • Validation    │    │ • Uncertainty    │    │ • Performance   │
+│ • MCMC Training │    │ • Recommendations│    │ • User Interface│
+│ • Optimization  │    │ • Cold-start     │    │ • Book Search   │
+│ • Precomputation│    │ • Uncertainty    │    │ • Real-time API │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
+           │                       │                       │
+           └───────────────────────┼───────────────────────┘
+                                   │
+                           ┌──────────────────┐
+                           │   DragonflyDB    │
+                           │   (Redis-compat) │
+                           │                  │
+                           │ • Model Storage  │
+                           │ • Precomputed    │
+                           │   Recommendations│
+                           └──────────────────┘
 ```
+
+### Implemented Features
+
+#### Core ML Pipeline
+1. **MCMC Training:** MAP-initialized Gibbs sampling with convergence monitoring
+2. **Cold-Start Support:** Weighted factor imputation for filtered users  
+3. **Uncertainty Quantification:** Credible intervals for all predictions
+4. **Hyperparameter Optimization:** Automated tuning with Optuna
+
+#### System Services
+5. **Real-time API:** FastAPI with comprehensive error handling
+6. **Web Interface:** Complete frontend for user interaction
+7. **Scalable Storage:** DragonflyDB for model and recommendation storage
+8. **Docker Deployment:** Full containerized architecture
+
+## Critical Assessment
+
+### Key Strengths
+1. **Mathematical Framework:** Full Bayesian inference with uncertainty quantification
+2. **Convergence Monitoring:** Geweke diagnostics and parameter stability tracking
+3. **Cold-Start Handling:** Expanded coverage from ~5% to 100% of user base
+4. **Automated Optimization:** Optuna-based hyperparameter search
+5. **Complete Pipeline:** End-to-end system from training to user interface
+
+### Limitations and Trade-offs
+
+#### 1. **Convergence Challenges**
+- **Reality:** MCMC chains likely not fully converged with current sample counts (550 samples)
+- **Evidence:** True convergence typically requires thousands to tens of thousands of samples
+- **Trade-off:** Current approach provides reasonable results for PoC, but not mathematically rigorous
+- **Impact:** Uncertainty estimates may be underestimated
+
+#### 2. **Data Sparsity** 
+- **Issue:** 99.8% sparsity remains fundamental limitation
+- **Mitigation:** Relaxed filtering increased dataset 4x, but sparsity persists
+- **Reality:** Collaborative filtering inherently limited by observation density
+
+#### 3. **Cold-Start Quality**
+- **Implementation:** Weighted factor imputation provides coverage but lower quality
+- **Limitation:** No content features or sophisticated cold-start modeling
+- **Trade-off:** Coverage vs. recommendation quality
+
+#### 4. **Computational Cost**
+- **Training:** MCMC sampling requires significant compute time
+- **Inference:** Monte Carlo uncertainty estimation adds latency
+- **Storage:** Precomputed recommendations scale with user base
+
+## Technical Considerations
+
+### Current State
+- **Proof of Concept:** Demonstrates full ML pipeline with uncertainty quantification
+- **Architecture:** Complete microservices setup with API, frontend, and storage
+- **Coverage:** Handles both trained users and cold-start scenarios
+- **Automation:** Hyperparameter optimization and containerized deployment
+
+### Areas for Enhancement
+1. **Convergence:** Longer MCMC chains for mathematical rigor
+2. **Content Features:** Incorporate book metadata and user demographics  
+3. **Scalability:** Approximate methods for faster uncertainty estimation
+4. **Evaluation:** A/B testing framework and business metric tracking
+
+## Known Limitations and Model Behavior
+
+### Collaborative Filtering Challenges
+This implementation demonstrates classic collaborative filtering limitations in practice:
+
+**Lack of Semantic Understanding:** Without content-based features, the model cannot capture semantic similarity. For example, a user rating "The Return of the King" 10/10 may not receive recommendations for "The Fellowship of the Ring" or "The Two Towers" if other users' rating patterns don't align perfectly.
+
+**Factor Collapse Issues:** Analysis of the learned factors reveals potential convergence to degenerate solutions where:
+- Cosine similarities between different book types approach 1.0
+- The model struggles to distinguish between fantasy novels, self-help books, and children's literature  
+- User and item factors operate at mismatched scales (observed U/V norm ratios of 60:1+)
+
+**Local Minima Convergence:** The optimization may get trapped in poor local minima where:
+- All books appear essentially equivalent to the model
+- High uncertainty values (±1.4-1.5 rating points) indicate low model confidence
+- Factor diversity is insufficient with k=5 latent dimensions
+
+### Mathematical Framework vs. Practical Results
+While the Bayesian framework is mathematically sound, the learned representations can collapse to a single mode. This is a well-documented failure mode in matrix factorization when optimization converges to suboptimal solutions.
+
+**Current Parameter Impact (α=6.57):**
+- Higher α values from optimization may help distinguish rating differences
+- However, insufficient factor diversity (k=5) limits the model's representational capacity
+- MAP initialization, while theoretically beneficial, may inadvertently guide toward degenerate solutions
+
+### Potential Solutions Not Implemented
+1. **Increased Dimensionality:** k=20-50 factors to capture book type diversity
+2. **Content Integration:** Book metadata (genre, author, series) for semantic similarity
+3. **Hybrid Approaches:** Combine collaborative and content-based methods
+4. **Advanced Initialization:** Alternative to MAP that encourages factor diversity
+5. **Regularization Tuning:** Prevent factor collapse through targeted constraints
+
+This case study demonstrates both the theoretical elegance and practical challenges of pure collaborative filtering approaches in sparse, diverse domains.
 
 ## Business Value Proposition
 

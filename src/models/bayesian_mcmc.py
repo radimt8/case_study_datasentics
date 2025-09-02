@@ -132,7 +132,7 @@ class BayesianPMF_MCMC:
         self.map_trained = False
     
     def train_map(self, R: torch.Tensor, mask: torch.Tensor, 
-                  n_epochs: int = 50, lr: float = 0.005,  # Reduced LR
+                  n_epochs: int = 200, lr: float = 0.005,  # Reduced LR
                   lambda_reg: float = 0.001, verbose: bool = True) -> Dict:  # Much less regularization
         """Train MAP estimate for initialization"""
         
@@ -379,7 +379,11 @@ class BayesianPMF_MCMC:
             check_every: How often to check convergence
             verbose: Whether to print progress
         """
-        
+        print(f"Input R device: {R.device}")
+        print(f"Input mask device: {mask.device}")
+        print(f"Model U device: {self.U.device}")
+        print(f"Model V device: {self.V.device}")
+
         # MAP initialization if requested
         if use_map_init and not self.map_trained:
             print("Training MAP initialization...")

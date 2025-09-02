@@ -1,34 +1,69 @@
 # Deployment Guide
 
+## Performance Considerations
+
+**CUDA vs CPU:** After testing both CUDA and CPU implementations, we found that **CPU training is actually faster** for this workload size. While the base Docker images include CUDA support, GPU acceleration proved counterproductive due to:
+- Small matrix dimensions (11K users × 5K books) 
+- MCMC sampling overhead outweighing GPU benefits
+- Memory transfer costs between CPU/GPU for Gibbs sampling
+
+**Image Optimization:** The system uses multi-stage Docker builds to avoid downloading PyTorch and heavy dependencies multiple times across services, saving significant bandwidth and build time.
+
 ## Microservices Architecture
 
-This system consists of three main services:
+This system consists of five main services:
 
-1. **API Service**: FastAPI server that serves recommendations
-2. **Batch Service**: Trains model and precomputes recommendations  
-3. **Dragonfly**: High-performance Redis-compatible data store
+1. **Optimizer Service**: Optuna-based hyperparameter optimization
+2. **Batch Service**: MCMC training and recommendation precomputation
+3. **API Service**: FastAPI server that serves recommendations  
+4. **Frontend Service**: Web interface for user interactions
+5. **DragonflyDB**: High-performance Redis-compatible data store
 
 ## Quick Start
 
-### 1. Start Core Services
+### 1. Build Base Image (Required First Step)
 ```bash
-# Start API and Dragonfly
-docker-compose up -d api dragonfly
+# MANDATORY: Build the base image with all heavy dependencies first
+docker build -f Dockerfile.base -t bayesian-mcmc:base .
+```
+
+**CUDA Compatibility Note:** Due to nvidia-container-toolkit compatibility issues with Linux 6.16+:
+- For CUDA acceleration: Use `podman` instead of `docker`, or set up `micromamba` environment on host
+- **Recommended:** Use CPU-only by changing base image to standard Python (CUDA is slower anyway for this workload)
+
+### 1b. Start Core Services
+```bash
+# Start runtime services
+docker-compose up -d  # (or explicitly: docker-compose up -d api frontend dragonfly)
 
 # Check services are running
 docker-compose ps
 ```
 
-### 2. Run Initial Model Training
+**Note:** The `batch` and `optimizer` services have profiles defined in docker-compose.yml, so they won't start automatically. They must be run explicitly using `docker-compose run --rm <service>` commands.
+
+### 2. Hyperparameter Optimization (Optional)
+```bash
+# Find optimal hyperparameters using Optuna
+docker-compose run --rm optimizer
+
+# Or set custom number of optimization trials
+OPTIMIZER_N_CALLS=20 docker-compose run --rm optimizer
+```
+
+### 3. Start All Services
+```bash
+# Start all services
+docker-compose up -d
+
+# Check services are running
+docker-compose ps
+```
+
+### 4. Run MCMC Training
 ```bash
 # Run batch processing to train model and generate recommendations
 docker-compose run --rm batch
-
-# This will:
-# - Load and preprocess the BookCrossing dataset
-# - Train Bayesian Matrix Factorization model
-# - Generate recommendations for all users with uncertainty quantification
-# - Store results in Dragonfly
 ```
 
 ### 3. Test API
