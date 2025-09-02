@@ -132,7 +132,7 @@ class BayesianPMF_MCMC:
         self.map_trained = False
     
     def train_map(self, R: torch.Tensor, mask: torch.Tensor, 
-                  n_epochs: int = 200, lr: float = 0.005,  # Reduced LR
+                  n_epochs: int = 50, lr: float = 0.005,  # Reduced LR
                   lambda_reg: float = 0.001, verbose: bool = True) -> Dict:  # Much less regularization
         """Train MAP estimate for initialization"""
         

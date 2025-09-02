@@ -416,18 +416,18 @@ class MCMCRecommender:
             print(f"\nDEBUG BOOK ANALYSIS:")
             print(f"Input books and their factors:")
             for book_info in valid_book_info:
-             book_factors = V_mean[book_info['idx']]
-             similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
-             print(f"  {book_info['title']} (rating {book_info['rating']}): "
-                   f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
+                book_factors = V_mean[book_info['idx']]
+                similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
+                print(f"  {book_info['title']} (rating {book_info['rating']}): "
+                    f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
             
             print(f"\nRecommended books and their similarity to user vector:")
             for i, rec in enumerate(result['recommendations'][:3]):  # Show top 3
-             book_idx = self.book_title_to_idx[rec['title']]
-             book_factors = V_mean[book_idx]
-             similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
-             print(f"  #{i+1}: {rec['title']} (pred {rec['predicted_rating']}): "
-                   f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
+                book_idx = self.book_title_to_idx[rec['title']]
+                book_factors = V_mean[book_idx]
+                similarity = torch.cosine_similarity(user_vector_mean, book_factors, dim=0)
+                print(f"  #{i+1}: {rec['title']} (pred {rec['predicted_rating']}): "
+                    f"cosine_sim={similarity.item():.3f}, norm={book_factors.norm().item():.3f}")
         
         # Add metadata
         if 'error' not in result:

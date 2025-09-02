@@ -89,7 +89,7 @@ class BatchProcessor:
             mask_test=matrices.get('mask_test_tensor'),
             n_samples=n_samples,
             burn_in=burn_in,
-            use_map_init=True,
+            use_map_init=False,
             adaptive=use_adaptive,
             min_samples=min_samples_for_convergence,  # Dynamic minimum
             check_every=max(10, n_samples // 20)      # Dynamic check frequency
@@ -398,7 +398,7 @@ def main():
         base_config = {
             'min_book_ratings': 10,
             'min_user_ratings': 5,
-            'k': 50,
+            'k': 100,
             'n_samples': 1500,
             'burn_in': 200,
             'alpha': 6.57,
@@ -410,7 +410,7 @@ def main():
         base_config = {
             'min_book_ratings': 10,
             'min_user_ratings': 5,
-            'k': 30,
+            'k': 100,
             'n_samples': 550,
             'burn_in': 200,
             'alpha': 6.57,
@@ -422,7 +422,7 @@ def main():
         base_config = {
             'min_book_ratings': 10,
             'min_user_ratings': 5,
-            'k': 20,
+            'k': 100,
             'n_samples': 50,
             'burn_in': 5,
             'alpha': 6.57,

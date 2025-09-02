@@ -4,8 +4,6 @@
 
 This project implements a **Bayesian Matrix Factorization system** for book recommendations using **MAP-initialized MCMC with Gibbs sampling**, developed as a case study demonstrating advanced machine learning techniques with microservices architecture. The implementation incorporates uncertainty quantification, convergence monitoring, hyperparameter optimization, and cold-start user support.
 
-**Key Achievement:** Built a recommendation system with uncertainty quantification, real-time API, web interface, and automated hyperparameter optimization using Optuna - demonstrating the full ML pipeline from research to deployment.
-
 ## System Overview
 
 ```
